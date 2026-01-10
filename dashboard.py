@@ -34,7 +34,8 @@ FIN_MAP = {
 
 def get_data():
     conn = sqlite3.connect('ibd_system.db')
-    df = pd.read_sql("SELECT m.symbol, r.* FROM security_master m JOIN repo_results r ON m.security_id = r.security_id", conn)
+    # 새로운 단일 테이블 구조에 맞게 수정
+    df = pd.read_sql("SELECT * FROM repo_results", conn)
     conn.close()
     return df
 
@@ -173,3 +174,4 @@ try:
             st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 except Exception as e:
     st.error(f"시스템 오류: {e}")
+
