@@ -6,110 +6,89 @@ from io import StringIO
 from datetime import datetime
 import time
 
-def get_clean_tickers():
-    """위키피디아에서 S&P 500, 나스닥 100 리스트를 가장 안전하게 추출"""
+def get_total_market_tickers():
+    """모든 수단을 동원해 미국 시장 전체 티커 5,000개+ 확보"""
     headers = {"User-Agent": "Mozilla/5.0"}
-    tickers_dict = {} # {symbol: sector}
-
-    print("Step 1: 핵심 우량주 리스트 수집 시작...")
+    all_tickers = set()
     
-    # 1. S&P 500 수집
+    # 1. 나스닥 공식 FTP 데이터 (가장 정확하지만 차단이 잦음)
+    print("Source 1: 나스닥 공식 서버 접속 중...")
     try:
-        url_sp = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        sp_tables = pd.read_html(StringIO(requests.get(url_sp, headers=headers).text))
-        for _, row in sp_tables[0].iterrows():
-            sym = str(row[0]).strip().replace('.', '-')
-            if len(sym) <= 5 and sym.isalpha(): # 이름 혼입 방지: 5자 이하 영문만
-                tickers_dict[sym] = str(row[3])
-    except Exception as e: print(f"S&P 500 실패: {e}")
+        url = "https://tda.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        res = requests.get(url, timeout=10)
+        df = pd.read_csv(StringIO(res.text), sep='|')
+        # 심볼만 추출 및 파일 정보 텍스트 제거
+        valid_syms = df['Symbol'].dropna().astype(str).tolist()
+        all_tickers.update([s for s in valid_syms if "File Creation Time" not in s])
+    except:
+        print("Source 1 실패. 다음 소스로 이동...")
 
-    # 2. NASDAQ 100 추가
-    try:
-        url_ndx = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-        ndx_tables = pd.read_html(StringIO(requests.get(url_ndx, headers=headers).text))
-        # 나스닥 100 테이블 위치 찾기 (보통 3~5번째)
-        target_df = ndx_tables[4] if len(ndx_tables) > 4 else ndx_tables[3]
-        for _, row in target_df.iterrows():
-            sym = str(row[1] if 'Ticker' in target_df.columns else row[0]).strip().replace('.', '-')
-            if sym not in tickers_dict and len(sym) <= 5 and sym.isalpha():
-                tickers_dict[sym] = "Technology/Growth"
-    except Exception as e: print(f"Nasdaq 100 실패: {e}")
+    # 2. 대안 소스: GitHub에 관리되는 대규모 티커 리스트
+    if len(all_tickers) < 3000:
+        print("Source 2: 오픈 데이터 리포지토리 활용...")
+        try:
+            # 실시간으로 업데이트되는 8,000개 이상의 티커 CSV
+            url_alt = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all_tickers.txt"
+            res_alt = requests.get(url_alt, timeout=10)
+            all_tickers.update([s.strip().upper() for s in res_alt.text.split('\n') if s.strip()])
+        except:
+            print("Source 2 실패.")
 
-    # 데이터프레임 변환
-    master = pd.DataFrame([{'symbol': k, 'sector': v} for k, v in tickers_dict.items()])
-    print(f"--- 최종 확인된 유효 티커 수: {len(master)}개 ---")
-    return master
+    # 3. 데이터 정제: 특수문자나 기업명 오입력 방지
+    clean_list = []
+    for s in all_tickers:
+        s = s.replace('.', '-')
+        # 티커는 보통 1-5자, 공백 없음, 숫자만 있는 경우 제외
+        if 1 <= len(s) <= 5 and s.replace('-', '').isalpha():
+            clean_list.append(s)
+    
+    print(f"--- 최종 확보된 전체 티커 수: {len(clean_list)}개 ---")
+    return list(set(clean_list))
 
 def update_database():
     start_time = datetime.now()
-    print(f"[{start_time}] 업데이트 프로세스 가동")
+    tickers = get_total_market_tickers()
     
-    master_data = get_clean_tickers()
-    if master_data.empty:
-        print("티커 리스트가 비어있어 종료합니다.")
-        return
-
-    tickers = master_data['symbol'].tolist()
+    if len(tickers) < 3000:
+        print(f"경고: 확보된 종목이 {len(tickers)}개로 너무 적습니다. 전체 수집에 실패했을 가능성이 큼.")
+    
     all_results = []
-
-    # 안전하게 100개씩 끊어서 다운로드 (에러 최소화)
-    chunk_size = 100
+    # 5,000개 이상이므로 야후 차단 방지를 위해 200개씩 신중하게 처리
+    chunk_size = 200 
+    
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
-        print(f"진행 중: {i} / {len(tickers)}...")
+        print(f"[{i}/{len(tickers)}] 처리 중...")
         
         try:
-            # group_by=False로 설정하여 멀티인덱스 방지
-            data = yf.download(chunk, period="1y", interval="1d", progress=False, threads=True)['Close']
+            # threads=False로 설정하여 야후의 공격적 감지 회피
+            data = yf.download(chunk, period="1y", interval="1d", progress=False, threads=False)['Close']
             
-            # 단일 종목일 경우와 다중 종목일 경우 처리
-            if isinstance(data, pd.Series):
-                data = data.to_frame()
+            if isinstance(data, pd.Series): data = data.to_frame()
 
             for ticker in data.columns:
                 series = data[ticker].dropna()
-                if len(series) < 200: continue
+                if len(series) < 240: continue # 상장 1년 미만 제외
                 
-                # RS 점수 계산
                 now = series.iloc[-1]
                 m3, m6, m9, m12 = series.iloc[-63], series.iloc[-126], series.iloc[-189], series.iloc[0]
                 raw_score = (now/m3 * 2) + (now/m6) + (now/m9) + (now/m12)
                 
-                # 이동평균선
-                ma50 = series.rolling(50).mean().iloc[-1]
-                ma200 = series.rolling(200).mean().iloc[-1]
-                
                 all_results.append({
-                    'symbol': ticker, 'raw_score': raw_score, 'price': round(now, 2),
-                    'ma50': ma50, 'ma200': ma200
+                    'symbol': ticker, 'raw_score': raw_score, 'price': round(now, 2)
                 })
         except: continue
-        time.sleep(1)
+        time.sleep(0.5) # 야후 서버에 숨 돌릴 시간 제공
 
-    # 결과 정리 및 DB 저장
+    # 전체 종목 대비 RS 점수 산출 (1-99)
     if all_results:
         final_df = pd.DataFrame(all_results)
         final_df['rs_score'] = (final_df['raw_score'].rank(pct=True) * 99).astype(int)
         
-        # 섹터 정보 다시 입히기
-        final_df = pd.merge(final_df, master_data, on='symbol', how='left')
-        ind_avg = final_df.groupby('sector')['raw_score'].mean().rank(pct=True) * 99
-        final_df['industry_rs_score'] = final_df['sector'].map(ind_avg.to_dict()).fillna(50).astype(int)
-
-        db_ready = []
-        for _, row in final_df.iterrows():
-            db_ready.append({
-                'symbol': row['symbol'], 'rs_score': row['rs_score'],
-                'industry_rs_score': row['industry_rs_score'],
-                'smr_grade': "A" if row['rs_score'] > 85 else "C",
-                'ad_rating': "A" if row['price'] > row['ma50'] > row['ma200'] else "C",
-                'sector': row['sector'], 'last_updated': datetime.now().strftime('%Y-%m-%d')
-            })
-
         conn = sqlite3.connect('ibd_system.db')
-        pd.DataFrame(db_ready).to_sql('repo_results', conn, if_exists='replace', index=False)
+        final_df[['symbol', 'rs_score', 'price']].to_sql('repo_results', conn, if_exists='replace', index=False)
         conn.close()
-        print(f"업데이트 완료! 소요시간: {datetime.now() - start_time}")
+        print(f"업데이트 완료! 총 {len(final_df)}개 종목 분석.")
 
 if __name__ == "__main__":
     update_database()
