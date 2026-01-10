@@ -2,14 +2,13 @@ name: Daily Stock Data Update
 
 on:
   schedule:
-    - cron: '0 0 * * *' # 매일 UTC 0시 (한국시간 오전 9시) 자동 실행
-  workflow_dispatch: # GitHub 웹사이트에서 버튼 눌러서 수동 실행 가능
+    # 월, 수, 금 한국 시간 오전 9시 (UTC 00:00)
+    - cron: '0 0 * * 1,3,5' 
+  workflow_dispatch: # 중요: 언제든 GitHub 웹에서 버튼 눌러 직접 실행 가능
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    
-    # 저장소에 쓰기 권한을 부여합니다 (DB 업데이트를 위해 필수)
     permissions:
       contents: write
 
@@ -35,6 +34,5 @@ jobs:
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           git add ibd_system.db
-          # 변경사항이 있을 때만 커밋 (에러 방지)
           git commit -m "Auto-update stock data [skip ci]" || exit 0
           git push
