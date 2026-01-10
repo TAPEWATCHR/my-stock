@@ -1,0 +1,33 @@
+name: Daily Stock Data Update
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 매일 한국시간 오전 9시
+  workflow_dispatch: # 수동 실행 버튼
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run update script
+        run: python update_data.py
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add ibd_system.db
+          git commit -m "Auto-update stock data [skip ci]" || exit 0
+          git push
