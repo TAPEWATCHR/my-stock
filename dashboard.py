@@ -107,35 +107,38 @@ try:
                 a_op = a_inc.loc['Operating Income'] if 'Operating Income' in a_inc.index else pd.Series()
                 a_eps = a_inc.loc['Basic EPS'] if 'Basic EPS' in a_inc.index else (a_inc.loc['Diluted EPS'] if 'Diluted EPS' in a_inc.index else pd.Series())
 
-                # 1. Growth Momentum (QoQ)
                 st.markdown("#### 📊 Growth Momentum (QoQ)")
                 qoq_df = pd.DataFrame({'분기': format_quarter(q_rev.index), '매출 QoQ(%)': calc_growth_logic(q_rev, 1), '영업이익 QoQ(%)': calc_growth_logic(q_op, 1), 'EPS QoQ(%)': calc_growth_logic(q_eps, 1)}).set_index('분기').head(5)
                 st.dataframe(qoq_df.style.format("{:.2f}"), use_container_width=True)
 
-                # 2. Annual Growth (YoY)
                 st.markdown("#### 📈 Annual Growth (YoY)")
                 yoy_df = pd.DataFrame({'연도': format_year(a_rev.index), '매출 YoY(%)': calc_growth_logic(a_rev, 1), '영업이익 YoY(%)': calc_growth_logic(a_op, 1), 'EPS YoY(%)': calc_growth_logic(a_eps, 1)}).set_index('연도')
                 st.dataframe(yoy_df.style.format("{:.2f}"), use_container_width=True)
 
-                # 3. Quarterly Details ($1,000)
+                # 3. Quarterly Details
                 st.markdown("#### 🧾 Quarterly Details ($1,000)")
                 q_target = pd.concat([q_inc, q_bal]).reindex(list(FIN_MAP.keys())).dropna(how='all')
                 q_target.index = [FIN_MAP.get(i, i) for i in q_target.index]
-                q_target.columns = format_quarter(q_target.columns) # 날짜 형식 수정
+                q_target.columns = format_quarter(q_target.columns)
                 q_disp = q_target.copy()
                 for idx in q_disp.index:
                     if "EPS" not in str(idx): q_disp.loc[idx] = q_disp.loc[idx] / 1000
-                st.dataframe(q_disp.style.format(lambda x: f"{x:,.2f}" if "EPS" in str(q_disp.index) else f"{x:,.0f}"), use_container_width=True)
+                
+                # 에러 해결: 인덱스 슬라이싱을 이용한 정밀 포맷팅
+                eps_rows = [i for i in q_disp.index if "EPS" in str(i)]
+                st.dataframe(q_disp.style.format(precision=0, thousands=",").format(precision=2, subset=pd.IndexSlice[eps_rows, :]), use_container_width=True)
 
-                # 4. Annual Details ($1,000)
+                # 4. Annual Details
                 st.markdown("#### 📅 Annual Details ($1,000)")
                 a_target = pd.concat([a_inc, a_bal]).reindex(list(FIN_MAP.keys())).dropna(how='all')
                 a_target.index = [FIN_MAP.get(i, i) for i in a_target.index]
-                a_target.columns = format_year(a_target.columns) # 날짜 형식 수정
+                a_target.columns = format_year(a_target.columns)
                 a_disp = a_target.copy()
                 for idx in a_disp.index:
                     if "EPS" not in str(idx): a_disp.loc[idx] = a_disp.loc[idx] / 1000
-                st.dataframe(a_disp.style.format(lambda x: f"{x:,.2f}" if "EPS" in str(a_disp.index) else f"{x:,.0f}"), use_container_width=True)
+                
+                eps_rows_a = [i for i in a_disp.index if "EPS" in str(i)]
+                st.dataframe(a_disp.style.format(precision=0, thousands=",").format(precision=2, subset=pd.IndexSlice[eps_rows_a, :]), use_container_width=True)
 
             with t_check:
                 last_eps_yoy = calc_growth_logic(q_eps, 4).iloc[0] if len(q_eps) > 4 else 0
