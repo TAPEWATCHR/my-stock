@@ -8,47 +8,43 @@ from datetime import datetime
 import time
 
 def get_master_list():
-    """나스닥 상장 전체 리스트와 S&P 500 섹터 정보를 결합"""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    """나스닥 서버가 죽었을 때를 대비해 다른 안정적인 경로로 티커 수집"""
+    headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 1. S&P 500 섹터 정보 가져오기 (가장 정확한 섹터 소스)
+    # 1. S&P 500 섹터 정보 (위키피디아는 매우 안정적임)
     sp_data = pd.DataFrame(columns=['symbol', 'sector'])
     try:
         url_sp = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         resp = requests.get(url_sp, headers=headers, timeout=10)
-        tables = pd.read_html(StringIO(resp.text))
-        sp_df = tables[0]
+        sp_df = pd.read_html(StringIO(resp.text))[0]
         sp_data = pd.DataFrame({
             'symbol': sp_df.iloc[:, 0].astype(str).str.strip().str.upper(),
             'sector': sp_df.iloc[:, 3].astype(str).str.strip()
         })
-    except Exception as e:
-        print(f"S&P 500 섹터 수집 실패: {e}")
+    except: pass
 
-    # 2. 전체 티커 확보 (Nasdaq 공식 리스트)
+    # 2. 전체 티커 확보 (전략 변경: 나스닥 서버 대신 다른 안정적인 소스 활용)
     all_tickers = []
+    print("전체 티커 리스트 확보 시도 중...")
     try:
-        url_all = "https://tda.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-        resp = requests.get(url_all, timeout=15)
-        lines = resp.text.split('\n')
-        for line in lines[1:]:  # 헤더 제외
-            parts = line.split('|')
-            if len(parts) > 1:
-                sym = parts[0].strip().upper()
-                # 티커 정제: 공백 없고, 숫자로만 되어있지 않으며, 1~5자 사이인 것만 (기업명 배제)
-                if sym and ' ' not in sym and not sym.isdigit() and 1 <= len(sym) <= 5:
-                    all_tickers.append(sym.replace('.', '-'))
-    except Exception as e:
-        print(f"전체 티커 수집 실패: {e}")
+        # 방법 1: 안정적인 실시간 소스 (fmp cloud 기반 오픈 데이터 등)
+        url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all_tickers.txt"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            all_tickers = [s.strip().upper() for s in resp.text.split('\n') if s.strip()]
+    except:
+        print("백업 소스 시도...")
+        # 방법 2: S&P 500 리스트라도 활용
         all_tickers = sp_data['symbol'].tolist()
 
-    # 중복 제거 및 기본 리스트 구성
-    all_tickers = list(set(all_tickers))
-    if not all_tickers:
-        all_tickers = ['AAPL', 'MSFT', 'TSLA', 'NVDA', 'GOOGL'] # 최소 백업
-
-    master = pd.DataFrame({'symbol': all_tickers})
-    master = pd.merge(master, sp_data, on='symbol', how='left')
+    # 정제
+    clean_tickers = []
+    for s in all_tickers:
+        if s and ' ' not in s and 1 <= len(s) <= 5:
+            clean_tickers.append(s.replace('.', '-'))
+            
+    all_data = pd.DataFrame({'symbol': list(set(clean_tickers))})
+    master = pd.merge(all_data, sp_data, on='symbol', how='left')
     master['sector'] = master['sector'].fillna('US Market')
     
     print(f"--- 최종 확보 티커 수: {len(master)}개 ---")
