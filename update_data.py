@@ -8,35 +8,45 @@ from datetime import datetime
 import time
 
 def get_master_list():
-    """나스닥 공식 리스트 + 위키피디아 섹터 정보 결합"""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    """나스닥 리스트 실패 시를 대비해 더 강력한 백업 소스 활용"""
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     print("Step 1-1: 주요 종목 섹터 정보 확보 중...")
     try:
-        # S&P 500 섹터 정보 (품질이 가장 좋음)
         url_sp = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         sp500 = pd.read_html(StringIO(requests.get(url_sp, headers=headers).text))[0]
         sp_data = pd.DataFrame({'symbol': sp500.iloc[:, 0], 'sector': sp500.iloc[:, 3]})
     except:
         sp_data = pd.DataFrame(columns=['symbol', 'sector'])
 
-    print("Step 1-2: 미국 시장 전체 티커(5,000+) 확보 중...")
+    print("Step 1-2: 미국 시장 전체 티커 확보 중...")
+    # 방법 A: 나스닥 공식 (기존 방식)
+    # 방법 B: 백업 소스 (일반적인 상장 티커 패턴 활용)
     try:
         url_all = "https://tda.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-        all_df = pd.read_csv(StringIO(requests.get(url_all).text), sep='|')
-        # 테스트 종목 및 비정상 데이터 필터링 (ETF 포함 전체)
+        resp = requests.get(url_all, timeout=10)
+        all_df = pd.read_csv(StringIO(resp.text), sep='|')
         all_df = all_df[all_df['Symbol'].notna() & (all_df['Test Issue'] == 'N')]
-        
-        all_data = pd.DataFrame({'symbol': all_df['Symbol']})
-        all_data['symbol'] = all_data['symbol'].str.replace('.', '-', regex=False).str.strip()
-        
-        # 3. 섹터 병합 및 나머지 'US Market'으로 채우기
-        master = pd.merge(all_data, sp_data, on='symbol', how='left')
-        master['sector'] = master['sector'].fillna('US Market')
-        return master.drop_duplicates('symbol')
-    except Exception as e:
-        print(f"티커 리스트 확보 실패: {e}")
-        return sp_data # 실패 시 S&P 500이라도 반환
+        all_tickers = all_df['Symbol'].tolist()
+    except:
+        print("나스닥 서버 연결 실패. 백업 티커 생성 모드 가동...")
+        # 나스닥 서버가 죽었을 때를 대비해 S&P 500 + 주요 Nasdaq 100이라도 합칩니다.
+        all_tickers = sp_data['symbol'].tolist()
+        try:
+            url_ndx = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+            ndx = pd.read_html(StringIO(requests.get(url_ndx, headers=headers).text))[4]
+            all_tickers.extend(ndx.iloc[:, 1 if 'Ticker' in ndx.columns else 0].tolist())
+        except: pass
+
+    all_data = pd.DataFrame({'symbol': list(set(all_tickers))}) # 중복 제거
+    all_data['symbol'] = all_data['symbol'].str.replace('.', '-', regex=False).str.strip()
+    
+    # .B 주식들을 -B로 변환 (BRK.B -> BRK-B)
+    all_data['symbol'] = all_data['symbol'].apply(lambda x: x.replace('.B', '-B') if isinstance(x, str) else x)
+
+    master = pd.merge(all_data, sp_data, on='symbol', how='left')
+    master['sector'] = master['sector'].fillna('US Market')
+    return master.drop_duplicates('symbol')
 
 def update_database():
     start_time = datetime.now()
