@@ -2,87 +2,84 @@ import yfinance as yf
 import pandas as pd
 import sqlite3
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
-def calculate_rs_score(tickers):
-    """종목별 RS 점수 계산 (윌리엄 오닐 방식: 최근 분기에 가중치)"""
-    data = yf.download(tickers, period="1y")['Close']
+def get_all_tickers():
+    """미국 주요 지수 종목 리스트 통합 (S&P 500 + Nasdaq 100)"""
+    # 1. S&P 500
+    sp500 = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
+    sp500_tickers = sp500['Symbol'].tolist()
     
+    # 2. Nasdaq 100
+    ndx = pd.read_html('https://en.wikipedia.org/wiki/Nasdaq-100')[4]
+    ndx_tickers = ndx['Ticker'].tolist()
+    
+    # 중복 제거 및 티커 정리 (yfinance 호환용)
+    all_tickers = list(set(sp500_tickers + ndx_tickers))
+    all_tickers = [t.replace('.', '-') for t in all_tickers]
+    return all_tickers
+
+def calculate_rs_score(data):
+    """주가 데이터를 바탕으로 가중 RS 점수 계산"""
     rs_results = []
-    for ticker in tickers:
-        try:
-            series = data[ticker].dropna()
-            if len(series) < 250: continue # 상장한지 얼마 안 된 종목 제외
-            
-            # 윌리엄 오닐 RS 공식 가중치: (현재/3개월전 * 2) + (현재/6개월전) + (현재/9개월전) + (현재/12개월전)
-            now = series.iloc[-1]
-            m3 = series.iloc[-63]  # 약 3개월 전
-            m6 = series.iloc[-126] # 약 6개월 전
-            m9 = series.iloc[-189] # 약 9개월 전
-            m12 = series.iloc[0]   # 약 1년 전
-            
-            weighted_score = (now/m3 * 2) + (now/m6) + (now/m9) + (now/m12)
-            rs_results.append({'symbol': ticker, 'raw_score': weighted_score})
-        except:
-            continue
-            
-    # 점수를 1~99로 정규화 (백분위)
-    rs_df = pd.DataFrame(rs_results)
-    rs_df['rs_score'] = rs_df['raw_score'].rank(pct=True) * 99
-    return rs_df
+    for ticker in data.columns:
+        series = data[ticker].dropna()
+        if len(series) < 252: continue # 1년치 데이터 미만 제외
+        
+        # 윌리엄 오닐 스타일 가중치 (최근 성과 강조)
+        now = series.iloc[-1]
+        m3 = series.iloc[-63]
+        m6 = series.iloc[-126]
+        m9 = series.iloc[-189]
+        m12 = series.iloc[0]
+        
+        # 가중치 계산 (3개월 성과에 2배 가중치)
+        raw_score = (now/m3 * 2) + (now/m6) + (now/m9) + (now/m12)
+        rs_results.append({'symbol': ticker, 'raw_score': raw_score, 'price': now})
+        
+    df = pd.DataFrame(rs_results)
+    # 1~99 점수로 변환
+    df['rs_score'] = df['raw_score'].rank(pct=True) * 99
+    return df
 
 def update_database():
-    conn = sqlite3.connect('ibd_system.db')
-    cursor = conn.cursor()
-
-    # 1. 감시할 종목 리스트 (예: 나스닥 100 또는 S&P 500)
-    # 실제 운영 시에는 본인이 관심 있는 티커 리스트를 넣으세요.
-    tickers = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "COST", "NFLX"] 
+    print(f"[{datetime.now()}] 전체 티커 리스트 확보 중...")
+    tickers = get_all_tickers()
     
-    # 2. RS 점수 계산
-    print("RS 점수 계산 중...")
-    rs_df = calculate_rs_score(tickers)
+    print(f"{len(tickers)}개 종목 주가 데이터 다운로드 중...")
+    # 전체 종목의 1년치 종가 한 번에 다운로드 (속도 향상)
+    data = yf.download(tickers, period="1y", interval="1d")['Close']
     
-    # 3. 기술적 지표 및 기본적 등급 업데이트 (예시 등급 부여)
-    # 실제 수급 등급(AD)이나 SMR 등급은 유료 API가 필요하므로, 
-    # 여기서는 주가와 거래량 데이터를 분석하여 가상으로 로직을 짭니다.
+    print("RS 점수 산출 및 기술적 지표 분석 중...")
+    rs_df = calculate_rs_score(data)
     
+    # 추가 데이터 (SMR, AD Rating 등 가상 로직)
     results = []
     for _, row in rs_df.iterrows():
         ticker = row['symbol']
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
+        # 간단한 수급 분석: 현재가 > 50일 이평선 & 200일 이평선이면 우량으로 간주
+        series = data[ticker].dropna()
+        ma50 = series.rolling(50).mean().iloc[-1]
+        ma200 = series.rolling(200).mean().iloc[-1]
         
-        # 수급(AD) 등급 계산 로직 (가상): 최근 20일 중 상승일 거래량이 많으면 A
-        vol_avg = hist['Volume'].tail(20).mean()
-        last_vol = hist['Volume'].iloc[-1]
-        ad_rating = "A" if last_vol > vol_avg and hist['Close'].iloc[-1] > hist['Open'].iloc[-1] else "C"
-        
-        # SMR 등급 (가상): ROE나 이익 성장률 기반
-        smr_grade = "A" if stock.info.get('returnOnEquity', 0) > 0.2 else "B"
+        ad_rating = "A" if row['price'] > ma50 > ma200 else "C"
         
         results.append({
             'symbol': ticker,
             'rs_score': round(row['rs_score']),
-            'industry_rs_score': round(np.random.uniform(50, 95)), # 산업군 점수
-            'smr_grade': smr_grade,
+            'industry_rs_score': round(np.random.uniform(40, 95)), # 실제 구현시 섹터별 평균 필요
+            'smr_grade': "A" if row['rs_score'] > 80 else "B",
             'ad_rating': ad_rating,
-            'sector': stock.info.get('sector', 'Unknown'),
+            'sector': "Technology", # yf.Ticker 호출은 느리므로 필요시 별도 매핑 테이블 사용 권장
             'last_updated': datetime.now().strftime('%Y-%m-%d')
         })
 
-    # 4. DB 저장
+    # DB 저장
+    conn = sqlite3.connect('ibd_system.db')
     final_df = pd.DataFrame(results)
-    # 기존 repo_results 테이블 업데이트 (security_id 매칭 로직은 환경에 맞게 조정 필요)
-    final_df.to_sql('repo_results_temp', conn, if_exists='replace', index=False)
-    
-    # 기존 테이블과 병합하거나 교체
-    cursor.execute("DROP TABLE IF EXISTS repo_results")
-    cursor.execute("ALTER TABLE repo_results_temp RENAME TO repo_results")
-    
-    conn.commit()
+    final_df.to_sql('repo_results', conn, if_exists='replace', index=False)
     conn.close()
-    print("DB 업데이트 완료!")
+    print(f"[{datetime.now()}] {len(final_df)}개 종목 업데이트 완료!")
 
 if __name__ == "__main__":
     update_database()
