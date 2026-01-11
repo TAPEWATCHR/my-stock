@@ -62,14 +62,20 @@ def get_detailed_info(ticker):
 try:
     df = get_data()
     if df.empty:
-        st.warning("데이터베이스를 찾을 수 없습니다. update_data.py를 먼저 실행해 주세요.")
+        st.warning("데이터베이스를 찾을 수 없습니다. 분석 업데이트가 완료될 때까지 기다려주세요.")
     else:
         with st.sidebar:
             st.header("🎛️ Terminal Control")
             with st.expander("🔍 종목 스캐너 필터", expanded=True):
-                # [수정] 가격 필터 추가
-                max_price = float(df['price'].max())
-                price_range = st.slider("주가 범위 ($)", 0.0, max_price, (10.0, max_price))
+                # [수정] 슬라이더 대신 직접 숫자 입력(number_input) 방식으로 변경
+                min_price_input = st.number_input(
+                    "최소 주가 설정 ($)", 
+                    min_value=0.0, 
+                    max_value=float(df['price'].max()), 
+                    value=10.0, 
+                    step=5.0,
+                    help="입력한 가격 이상의 종목만 표시됩니다."
+                )
                 
                 rs_min = st.slider("최소 RS 점수", 1, 99, 80)
                 ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50)
@@ -80,8 +86,8 @@ try:
                 all_sec = sorted(df['sector'].unique())
                 sel_sec = [s for s in all_sec if st.checkbox(s, value=True)]
 
-        # [수정] 마스크에 가격 조건 추가
-        mask = (df['price'] >= price_range[0]) & (df['price'] <= price_range[1]) & \
+        # [수정] 입력된 최소 가격(min_price_input) 이상의 종목만 필터링
+        mask = (df['price'] >= min_price_input) & \
                (df['rs_score'] >= rs_min) & (df['industry_rs_score'] >= ind_rs_min) & \
                (df['smr_grade'].isin(smr_f)) & (df['ad_rating'].isin(ad_f)) & (df['sector'].isin(sel_sec))
         
@@ -90,7 +96,6 @@ try:
         col_l, col_r = st.columns([LIST_RATIO, 4])
         with col_l:
             st.subheader(f"Leaders ({len(f_df)})")
-            # 디스플레이용 컬럼에 가격(Price) 추가
             d_df = f_df.rename(columns={'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS', 'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'})
             sel = st.dataframe(d_df[['Ticker', 'Price', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']], 
                                use_container_width=True, hide_index=True, on_select="rerun", 
@@ -101,7 +106,7 @@ try:
                 row = f_df.iloc[sel.selection.rows[0]]
                 ticker = row['symbol']
                 
-                # 상단 지표 카드
+                # 상단 지표 카드 표시
                 st.markdown(f"""<div style="display:flex; gap:15px; margin-bottom:25px;">
                     <div class="metric-card" style="flex:1;"><div class="metric-label">Stock RS</div><div class="metric-value">{row['rs_score']}</div></div>
                     <div class="metric-card" style="flex:1;"><div class="metric-label">SMR Grade</div><div class="metric-value">{row['smr_grade']}</div></div>
@@ -156,15 +161,12 @@ try:
                         st.checkbox(f"**S**: Supply/Demand (AD: {row['ad_rating']})", value=row['ad_rating'] in ['A','B'])
                         st.checkbox(f"**L**: Leader (RS: {row['rs_score']})", value=row['rs_score'] >= 80)
                         st.checkbox(f"**I**: Institutional (SMR: {row['smr_grade']})", value=row['smr_grade'] in ['A','B'])
-                        st.checkbox(f"**M**: Market Direction", value=True)
                     with c2:
                         st.markdown("### 🔵 Mark Minervini's Trend Template")
                         st.checkbox("1. 주가 > 150일 & 200일 MA", value=True)
                         st.checkbox("2. 150일 MA > 200일 MA", value=True)
                         st.checkbox("3. 200일 MA 우상향", value=True)
                         st.checkbox("4. 50일 MA > 150일 & 200일 MA", value=True)
-                        st.checkbox("5. 주가 > 52주 최저가 + 30%", value=True)
-                        st.checkbox("6. 주가 < 52주 최고가 - 25%", value=True)
 
                 with t_biz:
                     st.subheader(info.get('longName', ticker))
