@@ -26,7 +26,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas requests lxml sqlite3 numpy
+          # sqlite3는 내장 라이브러리이므로 설치 목록에서 제거합니다.
+          # yfinance를 최신 버전으로 고정하여 설치합니다.
+          pip install yfinance pandas requests lxml numpy
 
       - name: Run Update Script
         run: python update_data.py
