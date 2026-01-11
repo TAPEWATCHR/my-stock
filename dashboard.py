@@ -73,7 +73,7 @@ try:
                     min_value=0.0, 
                     max_value=float(df['price'].max()), 
                     value=10.0, 
-                    step=5.0,
+                    step=1.0,
                     help="입력한 가격 이상의 종목만 표시됩니다."
                 )
                 
@@ -176,3 +176,4 @@ try:
 
 except Exception as e:
     st.error(f"시스템 오류: {e}")
+
