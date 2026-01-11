@@ -1,0 +1,31 @@
+name: Auto Refresh Ticker List
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # 매주 일요일 자정에 실행
+  workflow_dispatch: # 수동 실행 버튼 활성화
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Refresh Tickers
+        run: python refresh_tickers.py
+
+      - name: Commit and Push if changed
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add tickers.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update ticker list" && git push)
