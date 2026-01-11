@@ -72,30 +72,36 @@ def update_database():
             except: continue
         time.sleep(1)
 
+# ... (앞부분 함수들은 동일) ...
+
     if all_results:
         df = pd.DataFrame(all_results)
         
-        # [중요] 종목별 RS 점수 (1-99)
+        # 1. RS 점수 정규화 (1-99)
         df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
         
-        # [중요] SMR 등급 (A-E)
+        # 2. SMR 등급 산정 (A-E) 
+        # [수정] 스트림릿 에러 방지를 위해 컬럼명을 'smr_grade'로 변경
         df['smr_value'] = df['roe'] + df['margin'] + df['sales_growth']
-        df['smr_rating'] = pd.qcut(df['smr_value'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
+        df['smr_grade'] = pd.qcut(df['smr_value'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        # [핵심] 스트림릿 오류 해결: 섹터별 RS 평균 점수 계산
-        # 스트림릿이 찾는 컬럼명인 'industry_rs_score'로 생성합니다.
+        # 3. 수급 등급 컬럼명 확인
+        # 만약 앱에서 'acc_dist_rating'을 찾는다면 이름을 맞춰줘야 합니다. 
+        # 여기서는 일단 'acc_dist'로 유지하되, 오류가 나면 'acc_dist_rating'으로 바꾸면 됩니다.
+        
+        # 4. 섹터별 RS 평균 점수 (기존과 동일)
         sector_avg = df.groupby('sector')['rs_score'].mean().reset_index()
         sector_avg.columns = ['sector', 'industry_rs_score']
         
         # 데이터 병합
         final_df = pd.merge(df, sector_avg, on='sector', how='left')
-        final_df['industry_rs_score'] = final_df['industry_rs_score'].astype(int)
+        final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
 
         # DB 저장
         conn = sqlite3.connect('ibd_system.db')
         final_df.to_sql('repo_results', conn, if_exists='replace', index=False)
         conn.close()
-        print(f"[{datetime.now()}] 모든 분석 완료 및 industry_rs_score 생성 성공!")
+        print(f"[{datetime.now()}] 업데이트 완료! smr_grade 컬럼 생성 성공.")
 
 if __name__ == "__main__":
     update_database()
