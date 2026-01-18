@@ -34,10 +34,35 @@ jobs:
       
     # 5. 결과 DB를 깃허브에 다시 저장 (선택 사항)
     # 이 단계가 없으면 DB가 생성만 되고 사라집니다.
-    - name: Commit and Push DB
+    - name: Commit and Push
       run: |
         git config --global user.name "GitHub Action"
         git config --global user.email "action@github.com"
-        git add ibd_system.db
-        git commit -m "Update Database: $(date)" || echo "No changes to commit"
-        git push
+          
+          # 변경사항 확인 (디버깅용)
+        git status
+
+          # 1. DB 파일이 있는지 확인 후 추가
+        if [ -f "ibd_system.db" ]; then
+          git add ibd_system.db
+            # 변경사항이 있는지 체크
+          if git diff --cached --quiet; then
+            echo "No changes in database. Skipping commit."
+            exit 0
+          fi
+          git stash
+        else
+          echo "Database file not found. Skipping."
+            exit 0
+          fi
+          
+          # 2. 최신 코드 가져오기
+          git pull origin main --rebase
+          
+          # 3. 변경사항 다시 적용
+          git stash pop || echo "No changes to pop"
+          
+          # 4. 커밋 및 푸시
+          git add ibd_system.db
+          git commit -m "Auto-update stock data [skip ci]"
+          git push origin main
