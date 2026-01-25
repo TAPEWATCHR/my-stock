@@ -1,63 +1,61 @@
 import pandas as pd
 from io import StringIO
-import os
 from ftplib import FTP
 
 def get_nasdaq_ftp_data(filename):
-    """나스닥 FTP에서 파일을 다운로드하여 리스트로 반환"""
     try:
         ftp = FTP('ftp.nasdaqtrader.com')
-        ftp.login()  # 익명 로그인
+        ftp.login()
         ftp.cwd('symboldirectory')
         
         lines = []
         ftp.retrlines(f'RETR {filename}', lines.append)
         ftp.quit()
         
-        # 데이터 정제 (첫 줄은 헤더, 마지막 줄은 파일 정보이므로 제외 가능성 고려)
         data = "\n".join(lines)
+        # 나스닥 파일은 구분자가 '|' 입니다.
         df = pd.read_csv(StringIO(data), sep='|')
-        return df.iloc[:, 0].dropna().astype(str).tolist()
+        
+        # 마지막 줄(파일 생성 정보) 제거 및 유효한 심볼만 추출
+        if 'Symbol' in df.columns:
+            return df['Symbol'].dropna().astype(str).tolist()
+        elif 'ACT Symbol' in df.columns: # otherlisted.txt는 컬럼명이 다를 수 있음
+            return df['ACT Symbol'].dropna().astype(str).tolist()
+        else:
+            return df.iloc[:, 0].dropna().astype(str).tolist()
     except Exception as e:
-        print(f"FTP 접속 실패 ({filename}): {e}")
+        print(f"FTP {filename} 수집 실패: {e}")
         return []
 
 def refresh_ticker_list():
-    new_tickers = set()
+    all_symbols = set()
 
-    print("최신 티커 리스트 수집 시작 (FTP 방식)...")
+    print("미국 전체 시장 티커 수집 시작 (NASDAQ, NYSE, AMEX 등)...")
     
-    # 1. 나스닥 및 기타 거래소 데이터 가져오기
-    new_tickers.update(get_nasdaq_ftp_data('nasdaqlisted.txt'))
-    new_tickers.update(get_nasdaq_ftp_data('otherlisted.txt'))
+    # 1. 나스닥 상장 종목
+    nasdaq_list = get_nasdaq_ftp_data('nasdaqlisted.txt')
+    all_symbols.update(nasdaq_list)
+    print(f"- 나스닥 종목 수집 완료: {len(nasdaq_list)}개")
 
-    # 2. 백업 소스 (기존 로직 유지)
-    if len(new_tickers) < 3000:
-        print("데이터가 부족하여 백업 소스 사용 시도...")
-        try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            url_backup = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all_tickers.txt"
-            import requests
-            res = requests.get(url_backup, headers=headers, timeout=10)
-            new_tickers.update([s.strip().upper() for s in res.text.split('\n') if s.strip()])
-        except Exception as e:
-            print(f"백업 소스 접속 실패: {e}")
+    # 2. 기타 거래소(NYSE 등) 종목
+    other_list = get_nasdaq_ftp_data('otherlisted.txt')
+    all_symbols.update(other_list)
+    print(f"- 기타 거래소(NYSE 등) 종목 수집 완료: {len(other_list)}개")
 
-    # 3. 정제 (1-5자 영문, 불필요한 값 제거)
-    # 나스닥 데이터에는 'File Creation Time' 같은 메타데이터가 포함될 수 있어 필터링이 중요합니다.
+    # 3. 데이터 정제 (기존 로직 유지)
     clean_tickers = sorted([
-        s.strip().upper() for s in new_tickers 
+        s.strip().upper() for s in all_symbols 
         if s.strip().isalpha() and 1 <= len(s.strip()) <= 5
+        and s.strip() not in ['SYMBOL', 'FILE'] # 헤더/푸터 방어 코드
     ])
 
     if len(clean_tickers) > 1000:
         with open('tickers.txt', 'w') as f:
             for ticker in clean_tickers:
                 f.write(f"{ticker}\n")
-        print(f"티커 리스트 업데이트 완료: 총 {len(clean_tickers)}개 종목")
+        print(f"✅ 전체 업데이트 완료: 총 {len(clean_tickers)}개 종목이 'tickers.txt'에 저장되었습니다.")
         return True
     
-    print("업데이트 실패: 유효한 티커를 충분히 확보하지 못했습니다.")
     return False
 
 if __name__ == "__main__":
