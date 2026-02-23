@@ -8,38 +8,27 @@ import requests
 import io
 
 def get_sector_master_map():
-    """
-    섹터 데이터를 여러 소스에서 로드하여 병합합니다.
-    소스 1이 실패하면 소스 2에서 찾는 방식으로 커버리지를 높입니다.
-    """
     sector_map = {}
-    
-    # --- 소스 1: 기존 GitHub 데이터 ---
     url1 = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all_tickers.csv"
     try:
         print("Loading Sector Map Source 1...")
         df1 = pd.read_csv(url1)
-        # 심볼 정규화 (공백 제거, 대문자, .을 -로 변경)
         df1['Symbol'] = df1['Symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
         sector_map.update(dict(zip(df1['Symbol'], df1['Sector'])))
     except Exception as e:
         print(f"Warning: Source 1 로드 실패 ({e})")
 
-    # --- 소스 2: NASDAQ Screener 백업 데이터 (섹터 정보가 풍부함) ---
     url2 = "https://raw.githubusercontent.com/yumoxu/stock-market-analysis/master/data/nasdaq_screener.csv"
     try:
         print("Loading Sector Map Source 2...")
         s = requests.get(url2).content
         df2 = pd.read_csv(io.StringIO(s.decode('utf-8')))
-        
-        # 컬럼명이 다를 수 있으므로 확인
         if 'Symbol' in df2.columns and 'Sector' in df2.columns:
             df2['Symbol'] = df2['Symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
-            # 기존 맵에 없는 것만 추가 (Source 1 우선, 없으면 Source 2)
             new_map = dict(zip(df2['Symbol'], df2['Sector']))
             for sym, sec in new_map.items():
                 if sym not in sector_map or pd.isna(sector_map[sym]):
-                    if isinstance(sec, str): # 유효한 문자열 섹터만 저장
+                    if isinstance(sec, str): 
                         sector_map[sym] = sec
     except Exception as e:
         print(f"Warning: Source 2 로드 실패 ({e})")
@@ -47,25 +36,16 @@ def get_sector_master_map():
     print(f"Total Sector Map Size: {len(sector_map)} symbols")
     return sector_map
 
-# [개선됨] AD 등급 산식: 종가 위치(CLV) 기반의 CMF(Chaikin Money Flow) 적용
 def calculate_acc_dist_rating(hist):
     if len(hist) < 20: return 'C'
     df = hist.iloc[-65:].copy()
-    
-    # CLV (Close Location Value) 계산: 종가가 하루 변동폭 중 어디에 위치하는가 (-1 ~ 1)
     high_low_range = df['High'] - df['Low']
     clv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / high_low_range.replace(0, 0.001)
-    
-    # 거래량에 CLV 가중치를 곱해서 합산 (진짜 매집/분산 거래량)
     money_flow_volume = clv * df['Volume']
-    
-    # 65일간의 총 거래량 대비 매집된 거래량의 비율
     total_volume = df['Volume'].sum()
     if total_volume == 0: return 'C'
     
     cmf = money_flow_volume.sum() / total_volume
-    
-    # CMF 기준 정교화된 AD 등급화
     if cmf >= 0.15: return 'A'
     elif cmf >= 0.05: return 'B'
     elif cmf >= -0.05: return 'C'
@@ -75,35 +55,27 @@ def calculate_acc_dist_rating(hist):
 def get_tickers():
     if os.path.exists('tickers.txt'):
         with open('tickers.txt', 'r') as f:
-            # 특수문자 제거 및 정규화 강화
             tickers = [line.strip().upper().replace('.', '-') for line in f if line.strip()]
-            return list(set(tickers)) # 중복 제거
+            return list(set(tickers))
     else:
         print("Warning: 'tickers.txt' not found. Using sample tickers.")
         return ['AAPL', 'NVDA', 'MSFT', 'TSLA']
 
 def fetch_info_with_retry(ticker_obj, retries=2):
-    """
-    yfinance info 호출이 실패할 경우 재시도하는 헬퍼 함수
-    """
     for attempt in range(retries + 1):
         try:
             info = ticker_obj.info
             if info and 'sector' in info:
                 return info
-            if attempt < retries:
-                time.sleep(1) # 실패 시 1초 대기 후 재시도
+            if attempt < retries: time.sleep(1)
         except:
-            if attempt < retries:
-                time.sleep(1)
-            else:
-                return None
+            if attempt < retries: time.sleep(1)
+            else: return None
     return None
 
 def update_database():
     tickers = get_tickers()
     sector_master = get_sector_master_map()
-    
     all_results = []
     chunk_size = 30 
     
@@ -113,31 +85,24 @@ def update_database():
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
-            # 멀티스레드 다운로드
             data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True)
-            
-            if data.empty:
-                print(f" > {i}~{i+chunk_size}: 데이터 없음")
-                continue
+            if data.empty: continue
 
             for ticker in chunk:
                 try:
-                    # 데이터 프레임 추출
                     if len(chunk) > 1:
                         if ticker not in data.columns.get_level_values(0): continue
                         hist = data[ticker].dropna()
                     else:
                         hist = data.dropna()
 
-                    # 최소 63일(약 3개월) 데이터가 없으면 스킵하여 신규 상장주 에러 방지
                     if len(hist) < 63: continue
 
-                    # [개선됨] RS Raw 산식: 동적 인덱스 접근으로 상장 기간이 짧은 종목도 커버
                     now_price = hist['Close'].iloc[-1]
                     idx_63 = -63 if len(hist) >= 63 else 0
                     idx_126 = -126 if len(hist) >= 126 else 0
                     idx_189 = -189 if len(hist) >= 189 else 0
-                    idx_252 = -252 if len(hist) >= 252 else 0 # 252일은 약 1년 거래일
+                    idx_252 = -252 if len(hist) >= 252 else 0
 
                     rs_raw = (now_price / hist['Close'].iloc[idx_63] * 2) + \
                              (now_price / hist['Close'].iloc[idx_126]) + \
@@ -145,8 +110,10 @@ def update_database():
                              (now_price / hist['Close'].iloc[idx_252])
 
                     ad_rating = calculate_acc_dist_rating(hist)
+                    
+                    # [추가됨] 50일 평균 거래대금(ADV) 계산
+                    adv_50 = (hist['Close'] * hist['Volume']).tail(50).mean()
 
-                    # --- 섹터 및 재무 데이터 처리 ---
                     sector = sector_master.get(ticker, "Unknown")
                     roe, margin, growth = 0, 0, 0
                     
@@ -161,22 +128,19 @@ def update_database():
                             roe = info.get('returnOnEquity', 0)
                             margin = info.get('profitMargins', 0)
                             growth = info.get('revenueGrowth', 0)
-                            
-                            api_sector = info.get('sector')
-                            if api_sector:
-                                sector = api_sector
-
+                            if info.get('sector'): sector = info.get('sector')
                     except Exception:
-                        pass # API 실패해도 가격 데이터는 저장
+                        pass
 
-                    if pd.isna(sector) or sector == "nan":
-                        sector = "Unknown"
+                    if pd.isna(sector) or sector == "nan": sector = "Unknown"
 
+                    # [수정됨] 딕셔너리에 adv_50 추가
                     all_results.append({
                         'symbol': ticker, 'price': float(now_price), 'rs_raw': rs_raw,
                         'roe': roe if roe else 0, 'margin': margin if margin else 0,
                         'sales_growth': growth if growth else 0,
-                        'ad_rating': ad_rating, 'sector': sector
+                        'ad_rating': ad_rating, 'sector': sector,
+                        'adv_50': adv_50
                     })
                 except Exception as inner_e:
                     continue 
@@ -190,17 +154,10 @@ def update_database():
 
     if all_results:
         df = pd.DataFrame(all_results)
-        unknown_count = len(df[df['sector'] == 'Unknown'])
-        print(f"--- 분석 완료: 총 {len(df)}개 중 Unknown 섹터: {unknown_count}개 ---")
-
-        # 개인 종목 RS 등수화
         df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-        
-        # SMR 등급화
         df['smr_val'] = df['roe'].rank(pct=True) + df['margin'].rank(pct=True) + df['sales_growth'].rank(pct=True)
         df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        # [개선됨] 산업군 RS 산식: rs_score(등수)가 아닌 rs_raw(원본 점수) 기반 통계로 왜곡 해결
         sector_avg = df.groupby('sector')['rs_raw'].mean().reset_index()
         sector_avg['industry_rs_score'] = (sector_avg['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
         
@@ -209,21 +166,17 @@ def update_database():
 
         conn = sqlite3.connect('ibd_system.db')
         try:
-            # 1. 메인 터미널 데이터 (매일 덮어쓰기)
-            final_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_rating', 'industry_rs_score', 'sector']].to_sql('repo_results', conn, if_exists='replace', index=False)
+            # [수정됨] repo_results 테이블에 adv_50 컬럼 추가 저장
+            final_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_rating', 'industry_rs_score', 'sector', 'adv_50']].to_sql('repo_results', conn, if_exists='replace', index=False)
             
-            # 2. RS 추세 히스토리 (매일 누적)
             today_str = datetime.now().strftime('%Y-%m-%d')
             history_df = final_df[['symbol', 'rs_score']].copy()
             history_df['date'] = today_str
             history_df.to_sql('rs_history', conn, if_exists='append', index=False)
             
-            # 3. DB 최적화 (검색 속도 향상 및 용량 제한 방지)
             print("--- 데이터베이스 최적화 및 정리 시작 ---")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON rs_history (symbol)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON rs_history (date)")
-            
-            # 1년(365일)이 지난 과거 데이터 삭제 (GitHub 용량 방어)
             one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             conn.execute(f"DELETE FROM rs_history WHERE date < '{one_year_ago}'")
             conn.execute("VACUUM")
