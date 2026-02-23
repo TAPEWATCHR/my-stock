@@ -4,8 +4,6 @@ import sqlite3
 import yfinance as yf
 import streamlit.components.v1 as components
 import os
-
-# [유지됨] 야후 파이낸스 속도 제한 및 캐싱을 위한 라이브러리
 import requests_cache
 from requests_ratelimiter import LimiterSession
 
@@ -27,17 +25,11 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. 야후 파이낸스 세션 설정 (Rate Limit & Caching) ---
 class CachedLimiterSession(requests_cache.CacheMixin, LimiterSession):
     pass
 
-session = CachedLimiterSession(
-    per_second=2,
-    cache_name='yfinance_cache',
-    expire_after=3600 
-)
+session = CachedLimiterSession(per_second=2, cache_name='yfinance_cache', expire_after=3600)
 
-# --- 2. 유틸리티 함수 ---
 FIN_MAP = {
     'Total Revenue': '매출액', 'Operating Income': '영업이익', 'Net Income': '당기순이익', 
     'EBITDA': 'EBITDA', 'Basic EPS': 'EPS', 'Total Assets': '총 자산', 
@@ -49,18 +41,18 @@ def get_data():
     conn = sqlite3.connect('ibd_system.db')
     df = pd.read_sql("SELECT * FROM repo_results", conn)
     conn.close()
+    # 첫 실행 시 컬럼이 없을 경우를 대비한 안전 장치
+    if 'adv_50' not in df.columns:
+        df['adv_50'] = 0.0
     return df
 
-# [새로 추가됨] DB에서 특정 종목의 과거 RS 점수 히스토리를 불러오는 함수
 def get_rs_history(ticker):
     if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
-        # 특정 티커의 날짜별 RS 점수를 과거부터 현재 순(오름차순)으로 가져옵니다.
         query = f"SELECT date, rs_score FROM rs_history WHERE symbol = '{ticker}' ORDER BY date ASC"
         hist_df = pd.read_sql(query, conn)
     except:
-        # 아직 rs_history 테이블이 생성되지 않았을 경우 빈 데이터프레임 반환
         hist_df = pd.DataFrame()
     conn.close()
     return hist_df
@@ -81,13 +73,17 @@ def get_detailed_info(ticker):
     s = yf.Ticker(ticker, session=session)
     return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, s.info
 
-# --- 3. 메인 화면 ---
+# --- 메인 화면 ---
 df = get_data()
 if not df.empty:
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         with st.expander("🔍 필터 설정", expanded=True):
             min_price = st.number_input("최소 주가 ($)", min_value=0.0, value=10.0, step=1.0)
+            
+            # [추가됨] 평균 거래대금 필터 ($2M 기본값)
+            min_adv_m = st.number_input("최소 50일 평균 거래대금 ($M)", min_value=0.0, value=2.0, step=0.5)
+            
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50) 
             smr_f = st.multiselect("SMR 등급", ["A", "B", "C", "D", "E"], default=["A", "B"])
@@ -96,16 +92,26 @@ if not df.empty:
             all_sec = sorted(df['sector'].unique())
             sel_sec = [s for s in all_sec if st.checkbox(s, value=(s != 'Unknown'))]
 
-    mask = (df['price'] >= min_price) & (df['rs_score'] >= rs_min) & \
+    # [수정됨] 마스크에 adv_50 필터 조건 추가
+    mask = (df['price'] >= min_price) & \
+           (df['adv_50'] >= min_adv_m * 1_000_000) & \
+           (df['rs_score'] >= rs_min) & \
            (df['industry_rs_score'] >= ind_rs_min) & \
            (df['smr_grade'].isin(smr_f)) & (df['ad_rating'].isin(ad_f)) & (df['sector'].isin(sel_sec))
+    
     f_df = df[mask].sort_values('rs_score', ascending=False)
 
     col_l, col_r = st.columns([2.5, 4])
     with col_l:
         st.subheader(f"Leaders ({len(f_df)})")
-        display_list = f_df.rename(columns={'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS', 'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'})
-        sel = st.dataframe(display_list[['Ticker', 'Price', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']], 
+        display_list = f_df.copy()
+        
+        # [추가됨] 보기 쉽게 M(밀리언) 단위로 변환
+        display_list['ADV($M)'] = (display_list['adv_50'] / 1_000_000).round(1)
+        display_list = display_list.rename(columns={'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS', 'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'})
+        
+        # [수정됨] 데이터프레임 렌더링 시 ADV($M) 포함
+        sel = st.dataframe(display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']], 
                            use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", height=850)
 
     with col_r:
@@ -130,16 +136,12 @@ if not df.empty:
                     <script>new TradingView.widget({{"autosize":true,"symbol":"{ticker}","interval":"D","theme":"dark","style":"1","locale":"kr","toolbar_bg":"#f1f3f6","enable_publishing":false,"withdateranges":true,"hide_side_toolbar":false,"allow_symbol_change":true,"studies":["MAExp@tv-basicstudies","MAExp@tv-basicstudies","RSI@tv-basicstudies"],"container_id":"tv_chart"}});</script>
                 """, height=710)
 
-                # [새로 추가됨] RS 추세선 차트 표시
                 st.markdown("<br>#### 📈 RS 점수 추세 (RS Trend Line)", unsafe_allow_html=True)
                 rs_hist_df = get_rs_history(ticker)
                 
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
-                    # Streamlit 차트에 예쁘게 보이도록 날짜를 인덱스로 설정
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
                     rs_hist_df.set_index('date', inplace=True)
-                    
-                    # 터미널 테마에 맞는 색상(#64ffda)으로 라인 차트 생성
                     st.line_chart(rs_hist_df['rs_score'], color="#64ffda")
                 else:
                     st.info("⏳ 오늘부터 RS 점수가 누적됩니다. 내일 자동 업데이트 이후부터 추세선이 나타납니다.")
