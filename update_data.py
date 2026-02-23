@@ -127,14 +127,11 @@ def update_database():
                     roe, margin, growth = 0, 0, 0
                     
                     # 맵에 없거나 재무 데이터가 필요한 경우 yfinance 호출
-                    # (Unknown인 경우에만 info를 호출하거나, 재무 데이터 수집을 위해 호출)
                     try:
                         t_obj = yf.Ticker(ticker)
-                        # 섹터가 Unknown이면 재시도 로직을 통해 꼼꼼히 찾음
                         if sector == "Unknown":
                             info = fetch_info_with_retry(t_obj, retries=2)
                         else:
-                            # 섹터를 이미 알면 한 번만 시도 (재무 데이터용)
                             info = t_obj.info
                         
                         if info:
@@ -142,7 +139,6 @@ def update_database():
                             margin = info.get('profitMargins', 0)
                             growth = info.get('revenueGrowth', 0)
                             
-                            # API에서 섹터 정보를 찾았다면 업데이트
                             api_sector = info.get('sector')
                             if api_sector:
                                 sector = api_sector
@@ -150,7 +146,6 @@ def update_database():
                     except Exception:
                         pass # API 실패해도 가격 데이터는 저장
 
-                    # 최종적으로도 Unknown이면 'Other' 등으로 분류하거나 유지
                     if pd.isna(sector) or sector == "nan":
                         sector = "Unknown"
 
@@ -164,18 +159,17 @@ def update_database():
                     continue 
 
             print(f" > {min(i+chunk_size, len(tickers))} / {len(tickers)} 완료 | 최근 섹터 예시: {sector}")
-            time.sleep(1) # 청크 간 딜레이 (API 보호)
+            time.sleep(1) 
 
         except Exception as e:
             print(f"Chunk Error: {e}")
             time.sleep(5)
 
-    # 저장 로직 (이전과 동일, 안전장치 추가)
+    # 저장 로직 수정 (여기서 히스토리 테이블에 누적 저장합니다)
     if all_results:
         try:
             df = pd.DataFrame(all_results)
             
-            # 섹터가 여전히 Unknown인 비율 확인
             unknown_count = len(df[df['sector'] == 'Unknown'])
             print(f"--- 분석 완료: 총 {len(df)}개 중 Unknown 섹터: {unknown_count}개 ---")
 
@@ -184,19 +178,25 @@ def update_database():
             df['smr_val'] = df['roe'].rank(pct=True) + df['margin'].rank(pct=True) + df['sales_growth'].rank(pct=True)
             df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
             
-            # 섹터별 평균 계산 시 Unknown은 제외하거나 별도 처리 가능
             sector_avg = df.groupby('sector')['rs_score'].mean().reset_index()
             sector_avg['industry_rs_score'] = (sector_avg['rs_score'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
             
             final_df = pd.merge(df, sector_avg[['sector', 'industry_rs_score']], on='sector', how='left')
-            
-            # 결측치 0 처리
             final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
 
             conn = sqlite3.connect('ibd_system.db')
+            
+            # 1. 기존 메인 테이블 업데이트 (replace: 매일 덮어쓰기)
             final_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_rating', 'industry_rs_score', 'sector']].to_sql('repo_results', conn, if_exists='replace', index=False)
+            
+            # 2. [추가됨] 과거 RS 점수 추적을 위한 히스토리 누적 (append: 차곡차곡 쌓기)
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            history_df = final_df[['symbol', 'rs_score']].copy()
+            history_df['date'] = today_str
+            history_df.to_sql('rs_history', conn, if_exists='append', index=False)
+            
             conn.close()
-            print("--- DB 저장 완료 ---")
+            print(f"--- DB 저장 완료 ({today_str} 기준 RS 점수 히스토리 누적 성공) ---")
         except Exception as db_e:
             print(f"DB 저장 에러: {db_e}")
     else:
