@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import sqlite3
 import time
-from datetime import datetime, timedelta  # timedelta 추가됨
+from datetime import datetime, timedelta
 import os
 import requests
 import io
@@ -47,15 +47,30 @@ def get_sector_master_map():
     print(f"Total Sector Map Size: {len(sector_map)} symbols")
     return sector_map
 
+# [개선됨] AD 등급 산식: 종가 위치(CLV) 기반의 CMF(Chaikin Money Flow) 적용
 def calculate_acc_dist_rating(hist):
     if len(hist) < 20: return 'C'
     df = hist.iloc[-65:].copy()
-    df['Price_Change'] = df['Close'].diff()
-    up_vol = df[df['Price_Change'] > 0]['Volume'].sum()
-    down_vol = df[df['Price_Change'] < 0]['Volume'].sum()
-    if down_vol <= 0: return 'C'
-    ratio = up_vol / down_vol
-    return 'A' if ratio >= 1.5 else 'B' if ratio >= 1.2 else 'C' if ratio >= 0.9 else 'D' if ratio >= 0.7 else 'E'
+    
+    # CLV (Close Location Value) 계산: 종가가 하루 변동폭 중 어디에 위치하는가 (-1 ~ 1)
+    high_low_range = df['High'] - df['Low']
+    clv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / high_low_range.replace(0, 0.001)
+    
+    # 거래량에 CLV 가중치를 곱해서 합산 (진짜 매집/분산 거래량)
+    money_flow_volume = clv * df['Volume']
+    
+    # 65일간의 총 거래량 대비 매집된 거래량의 비율
+    total_volume = df['Volume'].sum()
+    if total_volume == 0: return 'C'
+    
+    cmf = money_flow_volume.sum() / total_volume
+    
+    # CMF 기준 정교화된 AD 등급화
+    if cmf >= 0.15: return 'A'
+    elif cmf >= 0.05: return 'B'
+    elif cmf >= -0.05: return 'C'
+    elif cmf >= -0.15: return 'D'
+    else: return 'E'
 
 def get_tickers():
     if os.path.exists('tickers.txt'):
@@ -114,19 +129,27 @@ def update_database():
                     else:
                         hist = data.dropna()
 
-                    if len(hist) < 150: continue
+                    # 최소 63일(약 3개월) 데이터가 없으면 스킵하여 신규 상장주 에러 방지
+                    if len(hist) < 63: continue
 
+                    # [개선됨] RS Raw 산식: 동적 인덱스 접근으로 상장 기간이 짧은 종목도 커버
                     now_price = hist['Close'].iloc[-1]
+                    idx_63 = -63 if len(hist) >= 63 else 0
+                    idx_126 = -126 if len(hist) >= 126 else 0
+                    idx_189 = -189 if len(hist) >= 189 else 0
+                    idx_252 = -252 if len(hist) >= 252 else 0 # 252일은 약 1년 거래일
+
+                    rs_raw = (now_price / hist['Close'].iloc[idx_63] * 2) + \
+                             (now_price / hist['Close'].iloc[idx_126]) + \
+                             (now_price / hist['Close'].iloc[idx_189]) + \
+                             (now_price / hist['Close'].iloc[idx_252])
+
                     ad_rating = calculate_acc_dist_rating(hist)
-                    close = hist['Close']
-                    rs_raw = (now_price/close.iloc[-63]*2) + (now_price/close.iloc[-126]) + (now_price/close.iloc[-189]) + (now_price/close.iloc[0])
 
                     # --- 섹터 및 재무 데이터 처리 ---
-                    # 1차 시도: 마스터 맵에서 조회
                     sector = sector_master.get(ticker, "Unknown")
                     roe, margin, growth = 0, 0, 0
                     
-                    # 맵에 없거나 재무 데이터가 필요한 경우 yfinance 호출
                     try:
                         t_obj = yf.Ticker(ticker)
                         if sector == "Unknown":
@@ -170,13 +193,16 @@ def update_database():
         unknown_count = len(df[df['sector'] == 'Unknown'])
         print(f"--- 분석 완료: 총 {len(df)}개 중 Unknown 섹터: {unknown_count}개 ---")
 
+        # 개인 종목 RS 등수화
         df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
         
+        # SMR 등급화
         df['smr_val'] = df['roe'].rank(pct=True) + df['margin'].rank(pct=True) + df['sales_growth'].rank(pct=True)
         df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        sector_avg = df.groupby('sector')['rs_score'].mean().reset_index()
-        sector_avg['industry_rs_score'] = (sector_avg['rs_score'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
+        # [개선됨] 산업군 RS 산식: rs_score(등수)가 아닌 rs_raw(원본 점수) 기반 통계로 왜곡 해결
+        sector_avg = df.groupby('sector')['rs_raw'].mean().reset_index()
+        sector_avg['industry_rs_score'] = (sector_avg['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
         
         final_df = pd.merge(df, sector_avg[['sector', 'industry_rs_score']], on='sector', how='left')
         final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
@@ -194,16 +220,12 @@ def update_database():
             
             # 3. DB 최적화 (검색 속도 향상 및 용량 제한 방지)
             print("--- 데이터베이스 최적화 및 정리 시작 ---")
-            
-            # 검색 속도를 획기적으로 높여주는 인덱스 생성
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON rs_history (symbol)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON rs_history (date)")
             
-            # 1년(365일)이 지난 과거 데이터 삭제 (GitHub 100MB 한도 방지)
+            # 1년(365일)이 지난 과거 데이터 삭제 (GitHub 용량 방어)
             one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             conn.execute(f"DELETE FROM rs_history WHERE date < '{one_year_ago}'")
-            
-            # 빈 공간을 회수하여 DB 파일 용량 압축
             conn.execute("VACUUM")
             
             print(f"--- DB 저장 및 최적화 완벽 처리 완료 ({today_str}) ---")
