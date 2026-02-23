@@ -5,6 +5,10 @@ import yfinance as yf
 import streamlit.components.v1 as components
 import os
 
+# [추가됨] 야후 파이낸스 속도 제한 및 캐싱을 위한 라이브러리
+import requests_cache
+from requests_ratelimiter import LimiterSession
+
 # --- 0. 페이지 설정 ---
 st.set_page_config(layout="wide", page_title="Institutional Stock Terminal")
 
@@ -23,7 +27,19 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. 유틸리티 함수 ---
+# --- 1. 야후 파이낸스 세션 설정 (Rate Limit & Caching) ---
+# [추가됨] 속도 제한과 캐싱 기능이 결합된 세션 클래스
+class CachedLimiterSession(requests_cache.CacheMixin, LimiterSession):
+    pass
+
+# [추가됨] 초당 2회 요청 제한, 데이터 1시간(3600초) 캐싱
+session = CachedLimiterSession(
+    per_second=2,
+    cache_name='yfinance_cache',
+    expire_after=3600 
+)
+
+# --- 2. 유틸리티 함수 ---
 FIN_MAP = {
     'Total Revenue': '매출액', 'Operating Income': '영업이익', 'Net Income': '당기순이익', 
     'EBITDA': 'EBITDA', 'Basic EPS': 'EPS', 'Total Assets': '총 자산', 
@@ -50,10 +66,11 @@ def calc_growth(series, periods):
 
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
-    s = yf.Ticker(ticker)
+    # [수정됨] yfinance 호출 시 설정한 세션을 주입하여 Rate Limit 에러 방지
+    s = yf.Ticker(ticker, session=session)
     return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, s.info
 
-# --- 2. 메인 화면 ---
+# --- 3. 메인 화면 ---
 df = get_data()
 if not df.empty:
     with st.sidebar:
@@ -61,7 +78,7 @@ if not df.empty:
         with st.expander("🔍 필터 설정", expanded=True):
             min_price = st.number_input("최소 주가 ($)", min_value=0.0, value=10.0, step=1.0)
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
-            ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50) # [추가] 산업군 RS 필터
+            ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50) 
             smr_f = st.multiselect("SMR 등급", ["A", "B", "C", "D", "E"], default=["A", "B"])
             ad_f = st.multiselect("수급(AD) 등급", ["A", "B", "C", "D", "E"], default=["A", "B", "C"])
         with st.expander("🏢 산업군 필터"):
