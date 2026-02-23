@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta  # timedelta 추가됨
 import os
 import requests
 import io
@@ -165,40 +165,53 @@ def update_database():
             print(f"Chunk Error: {e}")
             time.sleep(5)
 
-    # 저장 로직 수정 (여기서 히스토리 테이블에 누적 저장합니다)
     if all_results:
+        df = pd.DataFrame(all_results)
+        unknown_count = len(df[df['sector'] == 'Unknown'])
+        print(f"--- 분석 완료: 총 {len(df)}개 중 Unknown 섹터: {unknown_count}개 ---")
+
+        df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
+        
+        df['smr_val'] = df['roe'].rank(pct=True) + df['margin'].rank(pct=True) + df['sales_growth'].rank(pct=True)
+        df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
+        
+        sector_avg = df.groupby('sector')['rs_score'].mean().reset_index()
+        sector_avg['industry_rs_score'] = (sector_avg['rs_score'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
+        
+        final_df = pd.merge(df, sector_avg[['sector', 'industry_rs_score']], on='sector', how='left')
+        final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
+
+        conn = sqlite3.connect('ibd_system.db')
         try:
-            df = pd.DataFrame(all_results)
-            
-            unknown_count = len(df[df['sector'] == 'Unknown'])
-            print(f"--- 분석 완료: 총 {len(df)}개 중 Unknown 섹터: {unknown_count}개 ---")
-
-            df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-            
-            df['smr_val'] = df['roe'].rank(pct=True) + df['margin'].rank(pct=True) + df['sales_growth'].rank(pct=True)
-            df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
-            
-            sector_avg = df.groupby('sector')['rs_score'].mean().reset_index()
-            sector_avg['industry_rs_score'] = (sector_avg['rs_score'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-            
-            final_df = pd.merge(df, sector_avg[['sector', 'industry_rs_score']], on='sector', how='left')
-            final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
-
-            conn = sqlite3.connect('ibd_system.db')
-            
-            # 1. 기존 메인 테이블 업데이트 (replace: 매일 덮어쓰기)
+            # 1. 메인 터미널 데이터 (매일 덮어쓰기)
             final_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_rating', 'industry_rs_score', 'sector']].to_sql('repo_results', conn, if_exists='replace', index=False)
             
-            # 2. [추가됨] 과거 RS 점수 추적을 위한 히스토리 누적 (append: 차곡차곡 쌓기)
+            # 2. RS 추세 히스토리 (매일 누적)
             today_str = datetime.now().strftime('%Y-%m-%d')
             history_df = final_df[['symbol', 'rs_score']].copy()
             history_df['date'] = today_str
             history_df.to_sql('rs_history', conn, if_exists='append', index=False)
             
-            conn.close()
-            print(f"--- DB 저장 완료 ({today_str} 기준 RS 점수 히스토리 누적 성공) ---")
+            # 3. DB 최적화 (검색 속도 향상 및 용량 제한 방지)
+            print("--- 데이터베이스 최적화 및 정리 시작 ---")
+            
+            # 검색 속도를 획기적으로 높여주는 인덱스 생성
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON rs_history (symbol)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON rs_history (date)")
+            
+            # 1년(365일)이 지난 과거 데이터 삭제 (GitHub 100MB 한도 방지)
+            one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            conn.execute(f"DELETE FROM rs_history WHERE date < '{one_year_ago}'")
+            
+            # 빈 공간을 회수하여 DB 파일 용량 압축
+            conn.execute("VACUUM")
+            
+            print(f"--- DB 저장 및 최적화 완벽 처리 완료 ({today_str}) ---")
+            
         except Exception as db_e:
-            print(f"DB 저장 에러: {db_e}")
+            print(f"DB 저장 및 최적화 에러: {db_e}")
+        finally:
+            conn.close()
     else:
         print("--- 결과 데이터가 없습니다. ---")
 
