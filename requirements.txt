@@ -4,3 +4,5 @@ yfinance
 requests
 lxml
 numpy
+requests-cache
+requests-ratelimiter
