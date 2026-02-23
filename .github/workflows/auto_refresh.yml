@@ -5,6 +5,10 @@ on:
     - cron: '0 0 * * 0' # 매주 일요일 자정에 실행
   workflow_dispatch: # 수동 실행 버튼 활성화
 
+# [여기가 핵심입니다!] GitHub Action 봇에게 코드 저장소 쓰기(Push) 권한을 부여합니다.
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
