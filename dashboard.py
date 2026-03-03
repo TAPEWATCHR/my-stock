@@ -5,10 +5,6 @@ import yfinance as yf
 import streamlit.components.v1 as components
 import os
 
-# [추가됨] 야후 파이낸스 속도 제한 및 캐싱을 위한 라이브러리
-import requests_cache
-from requests_ratelimiter import LimiterSession
-
 # --- 0. 페이지 설정 ---
 st.set_page_config(layout="wide", page_title="Institutional Stock Terminal")
 
@@ -27,17 +23,8 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. 야후 파이낸스 세션 설정 (Rate Limit & Caching) ---
-# 속도 제한과 캐싱 기능이 결합된 세션 클래스
-class CachedLimiterSession(requests_cache.CacheMixin, LimiterSession):
-    pass
-
-# 초당 2회 요청 제한, 데이터 1시간(3600초) 캐싱
-session = CachedLimiterSession(
-    per_second=2,
-    cache_name='yfinance_cache',
-    expire_after=3600 
-)
+# (수정됨) 야후 파이낸스 세션 설정 코드 삭제 
+# yfinance 내부에서 알아서 통신을 처리하도록 맡깁니다.
 
 # --- 2. 유틸리티 함수 ---
 FIN_MAP = {
@@ -52,22 +39,18 @@ def get_data():
     df = pd.read_sql("SELECT * FROM repo_results", conn)
     conn.close()
     
-    # [추가됨] 이전 DB 버전을 불러왔을 때 에러를 방지하기 위한 안전 장치
     if 'adv_50' not in df.columns:
         df['adv_50'] = 0.0
         
     return df
 
-# [추가됨] DB에서 특정 종목의 과거 RS 점수 히스토리를 불러오는 함수
 def get_rs_history(ticker):
     if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
-        # 특정 티커의 날짜별 RS 점수를 과거부터 현재 순(오름차순)으로 가져옵니다.
         query = f"SELECT date, rs_score FROM rs_history WHERE symbol = '{ticker}' ORDER BY date ASC"
         hist_df = pd.read_sql(query, conn)
     except:
-        # 아직 rs_history 테이블이 생성되지 않았을 경우 빈 데이터프레임 반환
         hist_df = pd.DataFrame()
     conn.close()
     return hist_df
@@ -85,8 +68,8 @@ def calc_growth(series, periods):
 
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
-    # yfinance 호출 시 설정한 세션을 주입하여 Rate Limit 에러 방지
-    s = yf.Ticker(ticker, session=session)
+    # (수정됨) session=session 매개변수를 제거했습니다.
+    s = yf.Ticker(ticker) 
     return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, s.info
 
 # --- 3. 메인 화면 ---
@@ -96,10 +79,7 @@ if not df.empty:
         st.header("🎛️ Terminal Control")
         with st.expander("🔍 필터 설정", expanded=True):
             min_price = st.number_input("최소 주가 ($)", min_value=0.0, value=10.0, step=1.0)
-            
-            # [새로 추가됨] 평균 거래대금 필터 ($2M 기본값)
             min_adv_m = st.number_input("최소 50일 평균 거래대금 ($M)", min_value=0.0, value=2.0, step=0.5)
-            
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50) 
             smr_f = st.multiselect("SMR 등급", ["A", "B", "C", "D", "E"], default=["A", "B"])
@@ -108,7 +88,6 @@ if not df.empty:
             all_sec = sorted(df['sector'].unique())
             sel_sec = [s for s in all_sec if st.checkbox(s, value=(s != 'Unknown'))]
 
-    # [수정됨] 마스크에 adv_50 필터 조건 추가 (M 단위이므로 1,000,000을 곱해줍니다)
     mask = (df['price'] >= min_price) & \
            (df['adv_50'] >= min_adv_m * 1_000_000) & \
            (df['rs_score'] >= rs_min) & \
@@ -122,14 +101,12 @@ if not df.empty:
         st.subheader(f"Leaders ({len(f_df)})")
         
         display_list = f_df.copy()
-        # [추가됨] 화면에 예쁘게 보이도록 adv_50을 $M 단위로 변환
         display_list['ADV($M)'] = (display_list['adv_50'] / 1_000_000).round(1)
-        
         display_list = display_list.rename(columns={'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS', 'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'})
         
-        # [수정됨] 화면 표에 ADV($M) 컬럼 추가
+        # (수정됨) use_container_width=True 에러 경고를 반영하여 코드 수정
         sel = st.dataframe(display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']], 
-                           use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", height=850)
+                           hide_index=True, on_select="rerun", selection_mode="single-row", height=850)
 
     with col_r:
         if len(sel.selection.rows) > 0:
@@ -153,22 +130,17 @@ if not df.empty:
                     <script>new TradingView.widget({{"autosize":true,"symbol":"{ticker}","interval":"D","theme":"dark","style":"1","locale":"kr","toolbar_bg":"#f1f3f6","enable_publishing":false,"withdateranges":true,"hide_side_toolbar":false,"allow_symbol_change":true,"studies":["MAExp@tv-basicstudies","MAExp@tv-basicstudies","RSI@tv-basicstudies"],"container_id":"tv_chart"}});</script>
                 """, height=710)
 
-                # [새로 추가됨] RS 추세선 차트 표시
                 st.markdown("<br>#### 📈 RS 점수 추세 (RS Trend Line)", unsafe_allow_html=True)
                 rs_hist_df = get_rs_history(ticker)
                 
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
-                    # Streamlit 차트에 예쁘게 보이도록 날짜를 인덱스로 설정
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
                     rs_hist_df.set_index('date', inplace=True)
-                    
-                    # 터미널 테마에 맞는 색상(#64ffda)으로 라인 차트 생성
                     st.line_chart(rs_hist_df['rs_score'], color="#64ffda")
                 else:
                     st.info("⏳ 오늘부터 RS 점수가 누적됩니다. 내일 자동 업데이트 이후부터 추세선이 나타납니다.")
 
             with t_fin:
-                # 1. 성장률 요약표 (전체 세트)
                 q_rev = q_inc.loc['Total Revenue'] if 'Total Revenue' in q_inc.index else pd.Series()
                 q_op = q_inc.loc['Operating Income'] if 'Operating Income' in q_inc.index else pd.Series()
                 q_eps = q_inc.loc['Basic EPS'] if 'Basic EPS' in q_inc.index else pd.Series()
@@ -184,7 +156,7 @@ if not df.empty:
                     '영업이익 성장(%)': calc_growth(q_op, 1),
                     'EPS 성장(%)': calc_growth(q_eps, 1)
                 }).set_index('분기').head(4)
-                st.dataframe(qoq_df.style.format("{:.1f}"), use_container_width=True)
+                st.dataframe(qoq_df.style.format("{:.1f}"))
 
                 st.markdown("#### 📅 연간 성장률 (YoY %)")
                 yoy_df = pd.DataFrame({
@@ -193,9 +165,8 @@ if not df.empty:
                     '영업이익 성장(%)': calc_growth(a_op, 1),
                     'EPS 성장(%)': calc_growth(a_eps, 1)
                 }).set_index('연도').head(4)
-                st.dataframe(yoy_df.style.format("{:.1f}"), use_container_width=True)
+                st.dataframe(yoy_df.style.format("{:.1f}"))
 
-                # 2. 상세 재무제표 (한글화 + 1000단위 + 시간제거)
                 def format_fin_df(df_in, date_type='Q'):
                     target = df_in.reindex(list(FIN_MAP.keys())).dropna(how='all')
                     target.index = [FIN_MAP.get(i, i) for i in target.index]
@@ -208,9 +179,9 @@ if not df.empty:
 
                 st.markdown("#### 🧾 상세 재무 데이터 ($1,000)")
                 st.write("**[연간 상세]**")
-                st.dataframe(format_fin_df(pd.concat([a_inc, a_bal]), 'A'), use_container_width=True)
+                st.dataframe(format_fin_df(pd.concat([a_inc, a_bal]), 'A'))
                 st.write("**[분기 상세]**")
-                st.dataframe(format_fin_df(pd.concat([q_inc, q_bal]), 'Q'), use_container_width=True)
+                st.dataframe(format_fin_df(pd.concat([q_inc, q_bal]), 'Q'))
 
             with t_check:
                 cur_eps_growth = calc_growth(q_eps, 4).iloc[0] if len(q_eps) >= 5 else 0
