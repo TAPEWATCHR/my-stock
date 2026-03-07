@@ -55,8 +55,13 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 
 [data-testid="stSidebar"] .stButton > button {{ min-width: 3.2rem; white-space: nowrap; overflow: visible; }}
 
-/* 리스트 테이블 Sector 열 풀네임 표시 */
-[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 180px; max-width: 320px; white-space: normal; word-break: keep-all; }}
+/* 사이드바 폭 확대 (좌우 겹침 방지) */
+[data-testid="stSidebar"] {{ min-width: 400px !important; }}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {{ width: 100% !important; min-width: 0 !important; }}
+
+/* 리스트 영역·Sector 열 폭 확대 (산업군 풀네임 한눈에) */
+[data-testid="stDataFrame"] {{ min-width: 420px !important; }}
+[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 220px !important; max-width: 400px !important; white-space: normal !important; word-break: keep-all; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -122,10 +127,20 @@ if not df.empty:
             if "smr_sel" not in st.session_state:
                 st.session_state.smr_sel = ["A", "B"]
             st.caption("SMR 등급")
-            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
-            smr_cols = st.columns(6)
-            for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
-                with smr_cols[i]:
+            smr_cols1 = st.columns(3)
+            for i, g in enumerate(["A", "B", "C"]):
+                with smr_cols1[i]:
+                    sel = g in st.session_state.smr_sel
+                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    if st.button(lbl, key=f"smr_{g}"):
+                        if g in st.session_state.smr_sel:
+                            st.session_state.smr_sel = [x for x in st.session_state.smr_sel if x != g]
+                        else:
+                            st.session_state.smr_sel = sorted(st.session_state.smr_sel + [g])
+                        st.rerun()
+            smr_cols2 = st.columns(3)
+            for i, g in enumerate(["D", "E", "전체"]):
+                with smr_cols2[i]:
                     sel = g in st.session_state.smr_sel if g != "전체" else set(st.session_state.smr_sel) == {"A","B","C","D","E"}
                     lbl = f"🔴 {g}" if sel else f"⚪ {g}"
                     if st.button(lbl, key=f"smr_{g}"):
@@ -141,14 +156,24 @@ if not df.empty:
 
             st.divider()
 
-            # 수급(AD) 등급: A,B,C,D,E,전체 토글
+            # 수급(AD) 등급: 상하 2줄·3열 배치
             if "ad_sel" not in st.session_state:
                 st.session_state.ad_sel = ["A", "B", "C"]
             st.caption("수급(AD) 등급")
-            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
-            ad_cols = st.columns(6)
-            for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
-                with ad_cols[i]:
+            ad_cols1 = st.columns(3)
+            for i, g in enumerate(["A", "B", "C"]):
+                with ad_cols1[i]:
+                    sel = g in st.session_state.ad_sel
+                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    if st.button(lbl, key=f"ad_{g}"):
+                        if g in st.session_state.ad_sel:
+                            st.session_state.ad_sel = [x for x in st.session_state.ad_sel if x != g]
+                        else:
+                            st.session_state.ad_sel = sorted(st.session_state.ad_sel + [g])
+                        st.rerun()
+            ad_cols2 = st.columns(3)
+            for i, g in enumerate(["D", "E", "전체"]):
+                with ad_cols2[i]:
                     sel = g in st.session_state.ad_sel if g != "전체" else set(st.session_state.ad_sel) == {"A","B","C","D","E"}
                     lbl = f"🔴 {g}" if sel else f"⚪ {g}"
                     if st.button(lbl, key=f"ad_{g}"):
@@ -167,16 +192,13 @@ if not df.empty:
             all_sec = sorted(df['sector'].unique())
             if "sector_sel" not in st.session_state:
                 st.session_state.sector_sel = [s for s in all_sec if s != 'Unknown']
-            # 전체 버튼 (글씨 잘리지 않게 min-width 적용됨)
             all_sel = set(st.session_state.sector_sel) == set(all_sec)
             lbl_sec_all = "🔴 전체" if all_sel else "⚪ 전체"
             if st.button(lbl_sec_all, key="sec_all"):
                 st.session_state.sector_sel = list(all_sec) if not all_sel else []
                 st.rerun()
             st.caption("산업군 (클릭하여 선택/해제)")
-            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
-            # 산업군별 토글 버튼 (4열 그리드)
-            n_col = 4
+            n_col = 2
             for j in range(0, len(all_sec), n_col):
                 cols = st.columns(n_col)
                 for k in range(n_col):
@@ -201,7 +223,7 @@ if not df.empty:
                (df['smr_grade'].isin(smr_f)) & (df['ad_rating'].isin(ad_f)) & (df['sector'].isin(sel_sec))
         f_df = df[mask].sort_values('rs_score', ascending=False)
 
-    col_l, col_r = st.columns([2.5, 4])
+    col_l, col_r = st.columns([3.5, 3.5])
     with col_l:
         st.subheader(f"Leaders ({len(f_df)})")
         display_list = f_df.copy()
@@ -238,13 +260,33 @@ if not df.empty:
             t_chart, t_fin, t_check, t_biz = st.tabs(["📊 차트", "🧾 재무제표", "🛡️ 체크리스트", "🏢 개요"])
 
             with t_chart:
-                components.html(f"""
-                <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-                <div id="tv_chart" style="height: 710px;"></div>
-                <script type="text/javascript">
-                new TradingView.widget({{"autosize":true,"symbol":"{ticker}","interval":"D","theme":"dark","style":"1","locale":"kr","toolbar_bg":"#f1f3f6","enable_publishing":false,"withdateranges":true,"hide_side_toolbar":false,"allow_symbol_change":true,"studies":["MAExp@tv-basicstudies","MAExp@tv-basicstudies","RSI@tv-basicstudies"],"container_id":"tv_chart"}});
-                </script>
-                """, height=710)
+                # 트레이딩뷰: 사용자 임베드 URL이 있으면 해당 차트 표시 (계정에서 만든 차트 레이아웃 사용 가능)
+                if "tv_embed_url" not in st.session_state:
+                    st.session_state.tv_embed_url = ""
+                with st.expander("📌 내 트레이딩뷰 차트 사용하기", expanded=False):
+                    st.caption("TradingView에서 차트를 꾸민 뒤 [공유] → [차트 임베드]에서 URL을 복사해 붙여넣으면, 해당 차트가 여기서 표시됩니다.")
+                    tv_url = st.text_input("TradingView 임베드 URL (선택)", value=st.session_state.tv_embed_url, key="tv_embed_input", placeholder="https://www.tradingview.com/chart/... 또는 임베드 URL")
+                    if tv_url and tv_url != st.session_state.tv_embed_url:
+                        st.session_state.tv_embed_url = tv_url
+                    if st.session_state.tv_embed_url:
+                        if st.button("기본 차트로 되돌리기", key="tv_reset"):
+                            st.session_state.tv_embed_url = ""
+                            st.rerun()
+                if st.session_state.tv_embed_url:
+                    embed_url = st.session_state.tv_embed_url.strip().replace("SYMBOL", ticker).replace("{{ticker}}", ticker)
+                    if "tradingview.com" in embed_url:
+                        components.html(f'<iframe src="{embed_url}" height="710" style="width:100%; border:0;"></iframe>', height=715)
+                    else:
+                        st.warning("TradingView 차트/임베드 URL을 입력해 주세요.")
+                        st.session_state.tv_embed_url = ""
+                else:
+                    components.html(f"""
+                    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+                    <div id="tv_chart" style="height: 710px;"></div>
+                    <script type="text/javascript">
+                    new TradingView.widget({{"autosize":true,"symbol":"{ticker}","interval":"D","theme":"dark","style":"1","locale":"kr","toolbar_bg":"#f1f3f6","enable_publishing":false,"withdateranges":true,"hide_side_toolbar":false,"allow_symbol_change":true,"studies":["MAExp@tv-basicstudies","MAExp@tv-basicstudies","RSI@tv-basicstudies"],"container_id":"tv_chart"}});
+                    </script>
+                    """, height=710)
 
                 st.markdown("#### 📈 RS 점수 추세 (1~100 고정)", unsafe_allow_html=True)
                 rs_hist_df = get_rs_history(ticker)
