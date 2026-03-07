@@ -1,6 +1,7 @@
 streamlit
 pandas
 yfinance
+altair
 requests
 lxml
 numpy
