@@ -53,15 +53,24 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 .overview-panel h2 {{ color: #64ffda !important; margin-bottom: 1rem; }}
 .overview-panel p {{ color: {OVERVIEW_TEXT} !important; }}
 
-[data-testid="stSidebar"] .stButton > button {{ min-width: 3.2rem; white-space: nowrap; overflow: visible; }}
+/* 사이드바 선택칸: O·글자·네모칸 축소 */
+[data-testid="stSidebar"] .stButton > button {{
+  min-width: 1.6rem !important;
+  padding: 0.2rem 0.4rem !important;
+  font-size: 0.7rem !important;
+  line-height: 1.2 !important;
+  white-space: nowrap;
+  overflow: visible;
+}}
 
-/* 사이드바 폭 확대 (좌우 겹침 방지) */
+/* 사이드바 폭 */
 [data-testid="stSidebar"] {{ min-width: 400px !important; }}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {{ width: 100% !important; min-width: 0 !important; }}
 
-/* 리스트 영역·Sector 열 폭 확대 (산업군 풀네임 한눈에) */
-[data-testid="stDataFrame"] {{ min-width: 420px !important; }}
-[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 220px !important; max-width: 400px !important; white-space: normal !important; word-break: keep-all; }}
+/* 종목 리스트 테이블 폭 확대 (Sector/Industry 풀네임 전부 보이게) */
+[data-testid="stDataFrame"] {{ min-width: 580px !important; width: 100% !important; }}
+[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 300px !important; white-space: normal !important; word-break: keep-all; }}
+/* 리스트가 들어가는 왼쪽 컬럼 폭 보장 */
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,7 +140,7 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with smr_cols1[i]:
                     sel = g in st.session_state.smr_sel
-                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    lbl = f"●{g}" if sel else f"○{g}"
                     if st.button(lbl, key=f"smr_{g}"):
                         if g in st.session_state.smr_sel:
                             st.session_state.smr_sel = [x for x in st.session_state.smr_sel if x != g]
@@ -142,7 +151,7 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with smr_cols2[i]:
                     sel = g in st.session_state.smr_sel if g != "전체" else set(st.session_state.smr_sel) == {"A","B","C","D","E"}
-                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    lbl = f"●{g}" if sel else f"○{g}"
                     if st.button(lbl, key=f"smr_{g}"):
                         if g == "전체":
                             st.session_state.smr_sel = ["A","B","C","D","E"] if len(st.session_state.smr_sel) < 5 else []
@@ -164,7 +173,7 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with ad_cols1[i]:
                     sel = g in st.session_state.ad_sel
-                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    lbl = f"●{g}" if sel else f"○{g}"
                     if st.button(lbl, key=f"ad_{g}"):
                         if g in st.session_state.ad_sel:
                             st.session_state.ad_sel = [x for x in st.session_state.ad_sel if x != g]
@@ -175,7 +184,7 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with ad_cols2[i]:
                     sel = g in st.session_state.ad_sel if g != "전체" else set(st.session_state.ad_sel) == {"A","B","C","D","E"}
-                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    lbl = f"●{g}" if sel else f"○{g}"
                     if st.button(lbl, key=f"ad_{g}"):
                         if g == "전체":
                             st.session_state.ad_sel = ["A","B","C","D","E"] if len(st.session_state.ad_sel) < 5 else []
@@ -193,7 +202,7 @@ if not df.empty:
             if "sector_sel" not in st.session_state:
                 st.session_state.sector_sel = [s for s in all_sec if s != 'Unknown']
             all_sel = set(st.session_state.sector_sel) == set(all_sec)
-            lbl_sec_all = "🔴 전체" if all_sel else "⚪ 전체"
+            lbl_sec_all = "●전체" if all_sel else "○전체"
             if st.button(lbl_sec_all, key="sec_all"):
                 st.session_state.sector_sel = list(all_sec) if not all_sel else []
                 st.rerun()
@@ -207,7 +216,7 @@ if not df.empty:
                         s = all_sec[idx]
                         with cols[k]:
                             sel = s in st.session_state.sector_sel
-                            lbl = f"🔴 {s}" if sel else f"⚪ {s}"
+                            lbl = f"●{s}" if sel else f"○{s}"
                             if st.button(lbl, key=f"sec_{s}"):
                                 if s in st.session_state.sector_sel:
                                     st.session_state.sector_sel = [x for x in st.session_state.sector_sel if x != s]
@@ -223,7 +232,7 @@ if not df.empty:
                (df['smr_grade'].isin(smr_f)) & (df['ad_rating'].isin(ad_f)) & (df['sector'].isin(sel_sec))
         f_df = df[mask].sort_values('rs_score', ascending=False)
 
-    col_l, col_r = st.columns([3.5, 3.5])
+    col_l, col_r = st.columns([4, 3])
     with col_l:
         st.subheader(f"Leaders ({len(f_df)})")
         display_list = f_df.copy()
@@ -236,7 +245,7 @@ if not df.empty:
             display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']],
             hide_index=True, on_select="rerun", selection_mode="single-row", height=850,
             column_config={
-                "Sector": st.column_config.TextColumn("Sector", width="large"),
+                "Sector": st.column_config.TextColumn("Sector", width=360),
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                 "Price": st.column_config.NumberColumn("Price", width="small"),
                 "ADV($M)": st.column_config.NumberColumn("ADV($M)", width="small"),
