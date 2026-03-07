@@ -10,6 +10,22 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 
+@st.cache_data(ttl=86400)
+def translate_to_korean(text):
+    """영문 개요를 한국어로 번역 (deep_translator 사용)"""
+    if not text or text == "N/A" or len(text.strip()) < 10:
+        return text
+    try:
+        from deep_translator import GoogleTranslator
+        chunk_size = 4500
+        out = []
+        for i in range(0, len(text), chunk_size):
+            chunk = text[i:i + chunk_size]
+            out.append(GoogleTranslator(source="auto", target="ko").translate(chunk))
+        return " ".join(out)
+    except Exception:
+        return text
+
 # --- 0. 페이지 설정 ---
 st.set_page_config(layout="wide", page_title="Institutional Stock Terminal")
 
@@ -38,6 +54,9 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 .overview-panel p {{ color: {OVERVIEW_TEXT} !important; }}
 
 [data-testid="stSidebar"] .stButton > button {{ min-width: 3.2rem; white-space: nowrap; overflow: visible; }}
+
+/* 리스트 테이블 Sector 열 풀네임 표시 */
+[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 180px; max-width: 320px; white-space: normal; word-break: keep-all; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -103,6 +122,7 @@ if not df.empty:
             if "smr_sel" not in st.session_state:
                 st.session_state.smr_sel = ["A", "B"]
             st.caption("SMR 등급")
+            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
             smr_cols = st.columns(6)
             for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
                 with smr_cols[i]:
@@ -119,10 +139,13 @@ if not df.empty:
                         st.rerun()
             smr_f = st.session_state.smr_sel
 
+            st.divider()
+
             # 수급(AD) 등급: A,B,C,D,E,전체 토글
             if "ad_sel" not in st.session_state:
                 st.session_state.ad_sel = ["A", "B", "C"]
             st.caption("수급(AD) 등급")
+            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
             ad_cols = st.columns(6)
             for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
                 with ad_cols[i]:
@@ -139,6 +162,7 @@ if not df.empty:
                         st.rerun()
             ad_f = st.session_state.ad_sel
 
+        st.divider()
         with st.expander("🏢 산업군 필터"):
             all_sec = sorted(df['sector'].unique())
             if "sector_sel" not in st.session_state:
@@ -150,6 +174,7 @@ if not df.empty:
                 st.session_state.sector_sel = list(all_sec) if not all_sel else []
                 st.rerun()
             st.caption("산업군 (클릭하여 선택/해제)")
+            st.markdown("<div style='margin-bottom: 6px;'></div>", unsafe_allow_html=True)
             # 산업군별 토글 버튼 (4열 그리드)
             n_col = 4
             for j in range(0, len(all_sec), n_col):
@@ -187,7 +212,17 @@ if not df.empty:
         })
         sel = st.dataframe(
             display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']],
-            hide_index=True, on_select="rerun", selection_mode="single-row", height=850
+            hide_index=True, on_select="rerun", selection_mode="single-row", height=850,
+            column_config={
+                "Sector": st.column_config.TextColumn("Sector", width="large"),
+                "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                "Price": st.column_config.NumberColumn("Price", width="small"),
+                "ADV($M)": st.column_config.NumberColumn("ADV($M)", width="small"),
+                "RS": st.column_config.NumberColumn("RS", width="small"),
+                "SMR": st.column_config.TextColumn("SMR", width="small"),
+                "AD": st.column_config.TextColumn("AD", width="small"),
+                "Ind RS": st.column_config.NumberColumn("Ind RS", width="small"),
+            }
         )
 
     with col_r:
@@ -295,9 +330,10 @@ if not df.empty:
             with t_biz:
                 st.subheader("🏢 개요")
                 long_name = info.get('longName', ticker)
-                summary = info.get('longBusinessSummary', 'N/A')
+                summary_en = info.get('longBusinessSummary', 'N/A')
+                summary_ko = translate_to_korean(summary_en)
                 st.markdown(
-                    f'<div class="overview-panel"><h2>{long_name}</h2><p>{summary}</p></div>',
+                    f'<div class="overview-panel"><h2>{long_name}</h2><p>{summary_ko}</p></div>',
                     unsafe_allow_html=True
                 )
         else:

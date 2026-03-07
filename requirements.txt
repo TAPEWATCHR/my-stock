@@ -2,6 +2,7 @@ streamlit
 pandas
 yfinance
 altair
+deep-translator
 requests
 lxml
 numpy
