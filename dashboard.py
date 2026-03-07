@@ -19,6 +19,7 @@ OVERVIEW_BG = "#252b3b"
 OVERVIEW_TEXT = "#e6eaf0"
 
 st.markdown(f"""
+<style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500&display=swap');
 .stApp {{ background-color: {BG_COLOR} !important; font-family: 'Inter', sans-serif; }}
 h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important; }}
@@ -27,39 +28,17 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 .metric-label {{ color: #aeb9cc !important; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }}
 .metric-value {{ font-size: 1.8rem; font-weight: 800; color: #64ffda !important; }}
 
-/* 테이블·재무제표 정교화 */
-[data-testid="stDataFrame"] {{
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid #4a5161;
-  font-size: 0.9rem;
-}}
-[data-testid="stDataFrame"] th {{
-  background: #2d3340 !important;
-  color: #64ffda !important;
-  font-weight: 600;
-  padding: 10px 12px !important;
-}}
-[data-testid="stDataFrame"] td {{
-  padding: 8px 12px !important;
-  color: #ccd6f6;
-}}
-[data-testid="stDataFrame"] tr:hover td {{
-  background: #3d4354 !important;
-}}
+[data-testid="stDataFrame"] {{ border-radius: 10px; overflow: hidden; border: 1px solid #4a5161; font-size: 0.9rem; }}
+[data-testid="stDataFrame"] th {{ background: #2d3340 !important; color: #64ffda !important; font-weight: 600; padding: 10px 12px !important; }}
+[data-testid="stDataFrame"] td {{ padding: 8px 12px !important; color: #ccd6f6; }}
+[data-testid="stDataFrame"] tr:hover td {{ background: #3d4354 !important; }}
 
-/* 개요 탭 가독성 */
-.overview-panel {{
-  background: {OVERVIEW_BG};
-  color: {OVERVIEW_TEXT};
-  padding: 1.5rem 1.75rem;
-  border-radius: 12px;
-  border: 1px solid #4a5161;
-  line-height: 1.7;
-  font-size: 0.95rem;
-}}
+.overview-panel {{ background: {OVERVIEW_BG}; color: {OVERVIEW_TEXT}; padding: 1.5rem 1.75rem; border-radius: 12px; border: 1px solid #4a5161; line-height: 1.7; font-size: 0.95rem; }}
 .overview-panel h2 {{ color: #64ffda !important; margin-bottom: 1rem; }}
 .overview-panel p {{ color: {OVERVIEW_TEXT} !important; }}
+
+[data-testid="stSidebar"] .stButton > button {{ min-width: 3.2rem; white-space: nowrap; overflow: visible; }}
+</style>
 """, unsafe_allow_html=True)
 
 # --- 2. 유틸리티 함수 ---
@@ -120,46 +99,75 @@ if not df.empty:
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50)
 
-            st.caption("SMR 등급 (빠른 선택)")
-            smr_preset = st.columns(3)
-            with smr_preset[0]:
-                if st.button("A,B", key="smr_ab"):
-                    st.session_state.smr_multiselect = ["A", "B"]
-            with smr_preset[1]:
-                if st.button("A,B,C", key="smr_abc"):
-                    st.session_state.smr_multiselect = ["A", "B", "C"]
-            with smr_preset[2]:
-                if st.button("전체", key="smr_all"):
-                    st.session_state.smr_multiselect = ["A", "B", "C", "D", "E"]
-            smr_f = st.multiselect("SMR 등급", ["A", "B", "C", "D", "E"], default=["A", "B"], key="smr_multiselect")
+            # SMR 등급: A,B,C,D,E,전체 토글 (빨강=선택, 흰색=해제)
+            if "smr_sel" not in st.session_state:
+                st.session_state.smr_sel = ["A", "B"]
+            st.caption("SMR 등급")
+            smr_cols = st.columns(6)
+            for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
+                with smr_cols[i]:
+                    sel = g in st.session_state.smr_sel if g != "전체" else set(st.session_state.smr_sel) == {"A","B","C","D","E"}
+                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    if st.button(lbl, key=f"smr_{g}"):
+                        if g == "전체":
+                            st.session_state.smr_sel = ["A","B","C","D","E"] if len(st.session_state.smr_sel) < 5 else []
+                        else:
+                            if g in st.session_state.smr_sel:
+                                st.session_state.smr_sel = [x for x in st.session_state.smr_sel if x != g]
+                            else:
+                                st.session_state.smr_sel = sorted(st.session_state.smr_sel + [g])
+                        st.rerun()
+            smr_f = st.session_state.smr_sel
 
-            st.caption("수급(AD) 등급 (빠른 선택)")
-            ad_preset = st.columns(3)
-            with ad_preset[0]:
-                if st.button("A,B", key="ad_ab"):
-                    st.session_state.ad_multiselect = ["A", "B"]
-            with ad_preset[1]:
-                if st.button("A,B,C", key="ad_abc"):
-                    st.session_state.ad_multiselect = ["A", "B", "C"]
-            with ad_preset[2]:
-                if st.button("전체", key="ad_all"):
-                    st.session_state.ad_multiselect = ["A", "B", "C", "D", "E"]
-            ad_f = st.multiselect("수급(AD) 등급", ["A", "B", "C", "D", "E"], default=["A", "B", "C"], key="ad_multiselect")
+            # 수급(AD) 등급: A,B,C,D,E,전체 토글
+            if "ad_sel" not in st.session_state:
+                st.session_state.ad_sel = ["A", "B", "C"]
+            st.caption("수급(AD) 등급")
+            ad_cols = st.columns(6)
+            for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
+                with ad_cols[i]:
+                    sel = g in st.session_state.ad_sel if g != "전체" else set(st.session_state.ad_sel) == {"A","B","C","D","E"}
+                    lbl = f"🔴 {g}" if sel else f"⚪ {g}"
+                    if st.button(lbl, key=f"ad_{g}"):
+                        if g == "전체":
+                            st.session_state.ad_sel = ["A","B","C","D","E"] if len(st.session_state.ad_sel) < 5 else []
+                        else:
+                            if g in st.session_state.ad_sel:
+                                st.session_state.ad_sel = [x for x in st.session_state.ad_sel if x != g]
+                            else:
+                                st.session_state.ad_sel = sorted(st.session_state.ad_sel + [g])
+                        st.rerun()
+            ad_f = st.session_state.ad_sel
 
         with st.expander("🏢 산업군 필터"):
             all_sec = sorted(df['sector'].unique())
-            if "sector_multiselect" not in st.session_state:
-                st.session_state.sector_multiselect = [s for s in all_sec if s != 'Unknown']
-            sec_bt = st.columns(2)
-            with sec_bt[0]:
-                if st.button("전체 선택", key="sec_all"):
-                    st.session_state.sector_multiselect = list(all_sec)
-                    st.rerun()
-            with sec_bt[1]:
-                if st.button("전체 해제", key="sec_none"):
-                    st.session_state.sector_multiselect = []
-                    st.rerun()
-            sel_sec = st.multiselect("산업군", all_sec, key="sector_multiselect")
+            if "sector_sel" not in st.session_state:
+                st.session_state.sector_sel = [s for s in all_sec if s != 'Unknown']
+            # 전체 버튼 (글씨 잘리지 않게 min-width 적용됨)
+            all_sel = set(st.session_state.sector_sel) == set(all_sec)
+            lbl_sec_all = "🔴 전체" if all_sel else "⚪ 전체"
+            if st.button(lbl_sec_all, key="sec_all"):
+                st.session_state.sector_sel = list(all_sec) if not all_sel else []
+                st.rerun()
+            st.caption("산업군 (클릭하여 선택/해제)")
+            # 산업군별 토글 버튼 (4열 그리드)
+            n_col = 4
+            for j in range(0, len(all_sec), n_col):
+                cols = st.columns(n_col)
+                for k in range(n_col):
+                    idx = j + k
+                    if idx < len(all_sec):
+                        s = all_sec[idx]
+                        with cols[k]:
+                            sel = s in st.session_state.sector_sel
+                            lbl = f"🔴 {s}" if sel else f"⚪ {s}"
+                            if st.button(lbl, key=f"sec_{s}"):
+                                if s in st.session_state.sector_sel:
+                                    st.session_state.sector_sel = [x for x in st.session_state.sector_sel if x != s]
+                                else:
+                                    st.session_state.sector_sel = sorted(st.session_state.sector_sel + [s])
+                                st.rerun()
+            sel_sec = st.session_state.sector_sel
 
         mask = (df['price'] >= min_price) & \
                (df['adv_50'] >= min_adv_m * 1_000_000) & \
