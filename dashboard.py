@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # TAPEWATCHR/my-stock 대시보드 개선판
 # 1) 사이드바 필터 UX  2) 테이블/재무 스타일  3) 개요 가독성  4) RS 차트 Y축 0~100 고정
+# + 추가 개선: 공백 추가, 선택 시 빨간색 강조, 버튼 크기 축소, 반응형 넓이 적용
 
 import streamlit as st
 import pandas as pd
@@ -39,12 +40,13 @@ st.markdown(f"""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500&display=swap');
 .stApp {{ background-color: {BG_COLOR} !important; font-family: 'Inter', sans-serif; }}
 h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important; }}
+
 [data-testid="stDataFrame"] {{ background-color: {TABLE_BG_COLOR} !important; }}
 .metric-card {{ background-color: {TABLE_BG_COLOR}; border-radius: 12px; padding: 22px; border: 1px solid #4a5161; text-align: center; }}
 .metric-label {{ color: #aeb9cc !important; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }}
 .metric-value {{ font-size: 1.8rem; font-weight: 800; color: #64ffda !important; }}
 
-[data-testid="stDataFrame"] {{ border-radius: 10px; overflow: hidden; border: 1px solid #4a5161; font-size: 0.9rem; }}
+[data-testid="stDataFrame"] {{ border-radius: 10px; overflow: hidden; border: 1px solid #4a5161; font-size: 0.9rem; width: 100% !important; }}
 [data-testid="stDataFrame"] th {{ background: #2d3340 !important; color: #64ffda !important; font-weight: 600; padding: 10px 12px !important; }}
 [data-testid="stDataFrame"] td {{ padding: 8px 12px !important; color: #ccd6f6; }}
 [data-testid="stDataFrame"] tr:hover td {{ background: #3d4354 !important; }}
@@ -53,24 +55,31 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 .overview-panel h2 {{ color: #64ffda !important; margin-bottom: 1rem; }}
 .overview-panel p {{ color: {OVERVIEW_TEXT} !important; }}
 
-/* 사이드바 선택칸: O·글자·네모칸 축소 */
+/* 3. 사이드바 선택칸: 크기 1/3 수준으로 대폭 축소 */
 [data-testid="stSidebar"] .stButton > button {{
-  min-width: 1.6rem !important;
-  padding: 0.2rem 0.4rem !important;
-  font-size: 0.7rem !important;
+  width: auto !important; /* 가로 길이를 글자 크기에 맞춤 */
+  min-width: 0 !important;
+  padding: 0.1rem 0.5rem !important; /* 패딩 최소화 */
+  font-size: 0.75rem !important;
   line-height: 1.2 !important;
+  min-height: 24px !important; /* 세로 높이 축소 */
   white-space: nowrap;
-  overflow: visible;
 }}
 
-/* 사이드바 폭 */
-[data-testid="stSidebar"] {{ min-width: 400px !important; }}
+/* 2. 선택 시 글자색 빨간색 활성화 (Primary 버튼 CSS 커스텀) */
+[data-testid="stSidebar"] button[kind="primary"] {{
+    color: #ff4b4b !important; /* 빨간색 텍스트 */
+    border-color: #ff4b4b !important; /* 테두리 빨간색 */
+    background-color: transparent !important; /* 배경 투명 */
+}}
+[data-testid="stSidebar"] button[kind="primary"]:hover {{
+    color: #ff7676 !important;
+    border-color: #ff7676 !important;
+}}
+
+/* 4. 사이드바 폭 유연하게 조정 (강제 너비 삭제하여 숨김 시 원활하게 확장됨) */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {{ width: 100% !important; min-width: 0 !important; }}
 
-/* 종목 리스트 테이블 폭 확대 (Sector/Industry 풀네임 전부 보이게) */
-[data-testid="stDataFrame"] {{ min-width: 580px !important; width: 100% !important; }}
-[data-testid="stDataFrame"] th:nth-child(8), [data-testid="stDataFrame"] td:nth-child(8) {{ min-width: 300px !important; white-space: normal !important; word-break: keep-all; }}
-/* 리스트가 들어가는 왼쪽 컬럼 폭 보장 */
 </style>
 """, unsafe_allow_html=True)
 
@@ -132,7 +141,7 @@ if not df.empty:
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50)
 
-            # SMR 등급: A,B,C,D,E,전체 토글 (빨강=선택, 흰색=해제)
+            # SMR 등급: 1. 공백 추가, 2. 선택 시 type="primary"로 빨간색 적용
             if "smr_sel" not in st.session_state:
                 st.session_state.smr_sel = ["A", "B"]
             st.caption("SMR 등급")
@@ -140,8 +149,9 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with smr_cols1[i]:
                     sel = g in st.session_state.smr_sel
-                    lbl = f"●{g}" if sel else f"○{g}"
-                    if st.button(lbl, key=f"smr_{g}"):
+                    lbl = f"● {g}" if sel else f"○ {g}"  # 공백 추가
+                    btn_type = "primary" if sel else "secondary" # 선택 시 primary 클래스 부여
+                    if st.button(lbl, key=f"smr_{g}", type=btn_type):
                         if g in st.session_state.smr_sel:
                             st.session_state.smr_sel = [x for x in st.session_state.smr_sel if x != g]
                         else:
@@ -151,8 +161,9 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with smr_cols2[i]:
                     sel = g in st.session_state.smr_sel if g != "전체" else set(st.session_state.smr_sel) == {"A","B","C","D","E"}
-                    lbl = f"●{g}" if sel else f"○{g}"
-                    if st.button(lbl, key=f"smr_{g}"):
+                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    btn_type = "primary" if sel else "secondary"
+                    if st.button(lbl, key=f"smr_{g}", type=btn_type):
                         if g == "전체":
                             st.session_state.smr_sel = ["A","B","C","D","E"] if len(st.session_state.smr_sel) < 5 else []
                         else:
@@ -165,7 +176,7 @@ if not df.empty:
 
             st.divider()
 
-            # 수급(AD) 등급: 상하 2줄·3열 배치
+            # 수급(AD) 등급: 1. 공백 추가, 2. 선택 시 type="primary" 적용
             if "ad_sel" not in st.session_state:
                 st.session_state.ad_sel = ["A", "B", "C"]
             st.caption("수급(AD) 등급")
@@ -173,8 +184,9 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with ad_cols1[i]:
                     sel = g in st.session_state.ad_sel
-                    lbl = f"●{g}" if sel else f"○{g}"
-                    if st.button(lbl, key=f"ad_{g}"):
+                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    btn_type = "primary" if sel else "secondary"
+                    if st.button(lbl, key=f"ad_{g}", type=btn_type):
                         if g in st.session_state.ad_sel:
                             st.session_state.ad_sel = [x for x in st.session_state.ad_sel if x != g]
                         else:
@@ -184,8 +196,9 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with ad_cols2[i]:
                     sel = g in st.session_state.ad_sel if g != "전체" else set(st.session_state.ad_sel) == {"A","B","C","D","E"}
-                    lbl = f"●{g}" if sel else f"○{g}"
-                    if st.button(lbl, key=f"ad_{g}"):
+                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    btn_type = "primary" if sel else "secondary"
+                    if st.button(lbl, key=f"ad_{g}", type=btn_type):
                         if g == "전체":
                             st.session_state.ad_sel = ["A","B","C","D","E"] if len(st.session_state.ad_sel) < 5 else []
                         else:
@@ -202,8 +215,9 @@ if not df.empty:
             if "sector_sel" not in st.session_state:
                 st.session_state.sector_sel = [s for s in all_sec if s != 'Unknown']
             all_sel = set(st.session_state.sector_sel) == set(all_sec)
-            lbl_sec_all = "●전체" if all_sel else "○전체"
-            if st.button(lbl_sec_all, key="sec_all"):
+            lbl_sec_all = "● 전체" if all_sel else "○ 전체" # 공백 추가
+            btn_type_all = "primary" if all_sel else "secondary"
+            if st.button(lbl_sec_all, key="sec_all", type=btn_type_all):
                 st.session_state.sector_sel = list(all_sec) if not all_sel else []
                 st.rerun()
             st.caption("산업군 (클릭하여 선택/해제)")
@@ -216,8 +230,9 @@ if not df.empty:
                         s = all_sec[idx]
                         with cols[k]:
                             sel = s in st.session_state.sector_sel
-                            lbl = f"●{s}" if sel else f"○{s}"
-                            if st.button(lbl, key=f"sec_{s}"):
+                            lbl = f"● {s}" if sel else f"○ {s}" # 공백 추가
+                            btn_type = "primary" if sel else "secondary"
+                            if st.button(lbl, key=f"sec_{s}", type=btn_type):
                                 if s in st.session_state.sector_sel:
                                     st.session_state.sector_sel = [x for x in st.session_state.sector_sel if x != s]
                                 else:
@@ -236,156 +251,4 @@ if not df.empty:
     with col_l:
         st.subheader(f"Leaders ({len(f_df)})")
         display_list = f_df.copy()
-        display_list['ADV($M)'] = (display_list['adv_50'] / 1_000_000).round(1)
-        display_list = display_list.rename(columns={
-            'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS',
-            'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'
-        })
-        sel = st.dataframe(
-            display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']],
-            hide_index=True, on_select="rerun", selection_mode="single-row", height=850,
-            column_config={
-                "Sector": st.column_config.TextColumn("Sector", width=360),
-                "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                "Price": st.column_config.NumberColumn("Price", width="small"),
-                "ADV($M)": st.column_config.NumberColumn("ADV($M)", width="small"),
-                "RS": st.column_config.NumberColumn("RS", width="small"),
-                "SMR": st.column_config.TextColumn("SMR", width="small"),
-                "AD": st.column_config.TextColumn("AD", width="small"),
-                "Ind RS": st.column_config.NumberColumn("Ind RS", width="small"),
-            }
-        )
-
-    with col_r:
-        if len(sel.selection.rows) > 0:
-            row = f_df.iloc[sel.selection.rows[0]]
-            ticker = row['symbol']
-
-            st.markdown(f"""
-            **Stock RS** {row['rs_score']} · **SMR** {row['smr_grade']} · **AD** {row['ad_rating']} · **Ind RS** {row['industry_rs_score']} · {row['sector']}
-            """, unsafe_allow_html=True)
-
-            q_inc, a_inc, q_bal, a_bal, info = get_detailed_info(ticker)
-            t_chart, t_fin, t_check, t_biz = st.tabs(["📊 차트", "🧾 재무제표", "🛡️ 체크리스트", "🏢 개요"])
-
-            with t_chart:
-                # 트레이딩뷰: 사용자 임베드 URL이 있으면 해당 차트 표시 (계정에서 만든 차트 레이아웃 사용 가능)
-                if "tv_embed_url" not in st.session_state:
-                    st.session_state.tv_embed_url = ""
-                with st.expander("📌 내 트레이딩뷰 차트 사용하기", expanded=False):
-                    st.caption("TradingView에서 차트를 꾸민 뒤 [공유] → [차트 임베드]에서 URL을 복사해 붙여넣으면, 해당 차트가 여기서 표시됩니다.")
-                    tv_url = st.text_input("TradingView 임베드 URL (선택)", value=st.session_state.tv_embed_url, key="tv_embed_input", placeholder="https://www.tradingview.com/chart/... 또는 임베드 URL")
-                    if tv_url and tv_url != st.session_state.tv_embed_url:
-                        st.session_state.tv_embed_url = tv_url
-                    if st.session_state.tv_embed_url:
-                        if st.button("기본 차트로 되돌리기", key="tv_reset"):
-                            st.session_state.tv_embed_url = ""
-                            st.rerun()
-                if st.session_state.tv_embed_url:
-                    embed_url = st.session_state.tv_embed_url.strip().replace("SYMBOL", ticker).replace("{{ticker}}", ticker)
-                    if "tradingview.com" in embed_url:
-                        components.html(f'<iframe src="{embed_url}" height="710" style="width:100%; border:0;"></iframe>', height=715)
-                    else:
-                        st.warning("TradingView 차트/임베드 URL을 입력해 주세요.")
-                        st.session_state.tv_embed_url = ""
-                else:
-                    components.html(f"""
-                    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-                    <div id="tv_chart" style="height: 710px;"></div>
-                    <script type="text/javascript">
-                    new TradingView.widget({{"autosize":true,"symbol":"{ticker}","interval":"D","theme":"dark","style":"1","locale":"kr","toolbar_bg":"#f1f3f6","enable_publishing":false,"withdateranges":true,"hide_side_toolbar":false,"allow_symbol_change":true,"studies":["MAExp@tv-basicstudies","MAExp@tv-basicstudies","RSI@tv-basicstudies"],"container_id":"tv_chart"}});
-                    </script>
-                    """, height=710)
-
-                st.markdown("#### 📈 RS 점수 추세 (1~100 고정)", unsafe_allow_html=True)
-                rs_hist_df = get_rs_history(ticker)
-                if not rs_hist_df.empty and len(rs_hist_df) > 1:
-                    rs_hist_df = rs_hist_df.copy()
-                    rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
-                    rs_hist_df['rs_score'] = rs_hist_df['rs_score'].clip(0, 100)
-                    chart = alt.Chart(rs_hist_df).mark_line(color='#64ffda', strokeWidth=2).encode(
-                        x=alt.X('date:T', title='날짜'),
-                        y=alt.Y('rs_score:Q', title='RS', scale=alt.Scale(domain=[0, 100]))
-                    ).properties(height=320)
-                    st.altair_chart(chart, use_container_width=True)
-                else:
-                    st.info("⏳ 오늘부터 RS 점수가 누적됩니다. 내일 자동 업데이트 이후부터 추세선이 나타납니다.")
-
-            with t_fin:
-                q_rev = q_inc.loc['Total Revenue'] if 'Total Revenue' in q_inc.index else pd.Series(dtype=float)
-                q_op = q_inc.loc['Operating Income'] if 'Operating Income' in q_inc.index else pd.Series(dtype=float)
-                q_eps = q_inc.loc['Basic EPS'] if 'Basic EPS' in q_inc.index else pd.Series(dtype=float)
-                a_rev = a_inc.loc['Total Revenue'] if 'Total Revenue' in a_inc.index else pd.Series(dtype=float)
-                a_op = a_inc.loc['Operating Income'] if 'Operating Income' in a_inc.index else pd.Series(dtype=float)
-                a_eps = a_inc.loc['Basic EPS'] if 'Basic EPS' in a_inc.index else pd.Series(dtype=float)
-
-                st.markdown("#### 📈 분기 성장률 (QoQ %)")
-                qoq_df = pd.DataFrame({
-                    '분기': format_date_idx(q_rev.index, 'Q'),
-                    '매출 성장(%)': calc_growth(q_rev, 1),
-                    '영업이익 성장(%)': calc_growth(q_op, 1),
-                    'EPS 성장(%)': calc_growth(q_eps, 1)
-                }).set_index('분기').head(4)
-                st.dataframe(qoq_df.style.format("{:.1f}"), use_container_width=True)
-
-                st.markdown("#### 📅 연간 성장률 (YoY %)")
-                yoy_df = pd.DataFrame({
-                    '연도': format_date_idx(a_rev.index, 'A'),
-                    '매출 성장(%)': calc_growth(a_rev, 1),
-                    '영업이익 성장(%)': calc_growth(a_op, 1),
-                    'EPS 성장(%)': calc_growth(a_eps, 1)
-                }).set_index('연도').head(4)
-                st.dataframe(yoy_df.style.format("{:.1f}"), use_container_width=True)
-
-                def format_fin_df(df_in, date_type='Q'):
-                    target = df_in.reindex(list(FIN_MAP.keys())).dropna(how='all')
-                    target.index = [FIN_MAP.get(i, i) for i in target.index]
-                    target.columns = format_date_idx(target.columns, date_type)
-                    disp = target.copy()
-                    for idx in disp.index:
-                        if "EPS" not in str(idx):
-                            disp.loc[idx] = disp.loc[idx] / 1000
-                    eps_rows = [i for i in disp.index if "EPS" in str(i)]
-                    return disp.style.format(precision=0, thousands=",").format(precision=2, subset=pd.IndexSlice[eps_rows, :])
-
-                st.markdown("#### 🧾 상세 재무 데이터 ($1,000)")
-                st.write("**연간 상세**")
-                st.dataframe(format_fin_df(pd.concat([a_inc, a_bal]), 'A'), use_container_width=True)
-                st.write("**분기 상세**")
-                st.dataframe(format_fin_df(pd.concat([q_inc, q_bal]), 'Q'), use_container_width=True)
-
-            with t_check:
-                cur_eps_growth = calc_growth(q_eps, 4).iloc[0] if len(q_eps) >= 5 else 0
-                st.subheader("🛡️ 주도주 판별 시스템")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("### 🟢 CANSLIM (오닐)")
-                    st.checkbox(f"**C**: 분기 EPS 25%↑ ({cur_eps_growth:.1f}%)", value=cur_eps_growth >= 25)
-                    st.checkbox("**A**: 연간 이익 증가 (ROE 17%↑)", value=True)
-                    st.checkbox("**N**: 신고가 또는 새로운 재료", value=True)
-                    st.checkbox(f"**S**: 공급과 수요 (AD: {row['ad_rating']})", value=row['ad_rating'] in ['A', 'B'])
-                    st.checkbox(f"**L**: 시장 주도주 (RS: {row['rs_score']})", value=row['rs_score'] >= 80)
-                    st.checkbox(f"**I**: 기관 매집 (SMR: {row['smr_grade']})", value=row['smr_grade'] in ['A', 'B'])
-                    st.checkbox("**M**: 시장 대세 상승 확인", value=True)
-                with c2:
-                    st.markdown("### 🔵 트렌드 템플릿 (미너비니)")
-                    st.checkbox("1. 주가 > 150일 & 200일 MA", value=True)
-                    st.checkbox("2. 150일 MA > 200일 MA", value=True)
-                    st.checkbox("3. 200일 MA 우상향 유지", value=True)
-                    st.checkbox("4. 50일 MA > 150일 & 200일 MA", value=True)
-                    st.checkbox("5. 현재가 > 52주 저가 대비 30%↑", value=True)
-                    st.checkbox("6. 현재가 < 52주 고가 대비 25% 이내", value=True)
-                    st.checkbox(f"7. RS 점수 80 이상 (현재: {row['rs_score']})", value=row['rs_score'] >= 80)
-                    st.checkbox("8. 주가가 50일 MA 위에서 지지", value=True)
-
-            with t_biz:
-                st.subheader("🏢 개요")
-                long_name = info.get('longName', ticker)
-                summary_en = info.get('longBusinessSummary', 'N/A')
-                summary_ko = translate_to_korean(summary_en)
-                st.markdown(
-                    f'<div class="overview-panel"><h2>{long_name}</h2><p>{summary_ko}</p></div>',
-                    unsafe_allow_html=True
-                )
-        else:
-            st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
+        display_list['ADV($M)'] = (display
