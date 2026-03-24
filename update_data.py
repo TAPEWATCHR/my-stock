@@ -49,8 +49,11 @@ def calculate_ad_raw(hist):
     return recent_20 + past_45
 
 def get_smr_acceleration(t_obj):
-    """최근 3분기/3개년 재무 데이터를 통한 가속도(Delta) 계산"""
-    sales_accel, margin_accel, pretax_accel, roe_accel = 0, 0, 0, 0
+    """최근 3분기/3개년 재무 데이터를 통한 가속도(Delta) 및 흑자 여부 계산"""
+    # 0 대신 NaN을 기본값으로 하여, 결측치가 중간 등급으로 계산되는 착시를 막습니다.
+    sales_accel, margin_accel, pretax_accel, roe_accel = np.nan, np.nan, np.nan, np.nan
+    is_profitable = False # 최근 흑자 여부 판단용
+    
     try:
         # 1. 분기별 데이터 (매출, 세후이익)
         qf = t_obj.quarterly_financials
@@ -58,6 +61,10 @@ def get_smr_acceleration(t_obj):
             rev = qf.loc['Total Revenue'].dropna().values
             net = qf.loc['Net Income'].dropna().values
             
+            # 최근 분기 순이익이 0보다 크면 흑자로 판별
+            if len(net) > 0 and net[0] > 0:
+                is_profitable = True
+                
             if len(rev) >= 3:
                 g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
                 g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
@@ -92,9 +99,9 @@ def get_smr_acceleration(t_obj):
                 roe_accel = (roe0 - roe1) + (roe1 - roe2)
 
     except Exception:
-        pass # 재무 데이터가 없는 종목은 0으로 처리
+        pass # 재무 데이터가 없는 종목은 그대로 NaN 유지
 
-    return sales_accel, margin_accel, pretax_accel, roe_accel
+    return sales_accel, margin_accel, pretax_accel, roe_accel, is_profitable
 
 def get_tickers():
     if os.path.exists('tickers.txt'):
@@ -103,7 +110,7 @@ def get_tickers():
             return list(set(tickers))
     else:
         print("Warning: 'tickers.txt' not found. Using sample tickers.")
-        return ['AAPL', 'NVDA', 'MSFT', 'TSLA']
+        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'TNGX'] # 테스트를 위해 TNGX 추가
 
 def update_database():
     tickers = get_tickers()
@@ -149,9 +156,9 @@ def update_database():
                     industry = industry_master.get(ticker, "Unknown")
                     mcap = 1 
                     
-                    # 재무 가속도 데이터 추출
+                    # 재무 가속도 데이터 및 흑자여부 추출
                     t_obj = yf.Ticker(ticker)
-                    sales_acc, margin_acc, pretax_acc, roe_acc = get_smr_acceleration(t_obj)
+                    sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
                     
                     try:
                         info = t_obj.info
@@ -168,6 +175,7 @@ def update_database():
                         'ad_raw': ad_raw, 'adv_50': adv_50, 'mcap': float(mcap),
                         'sales_acc': sales_acc, 'margin_acc': margin_acc, 
                         'pretax_acc': pretax_acc, 'roe_acc': roe_acc,
+                        'is_profitable': is_profitable, # 추가된 필드
                         'industry': industry
                     })
                 except Exception as inner_e:
@@ -189,15 +197,18 @@ def update_database():
         # 2. AD Rating (상대평가 백분위로 A~E 부여)
         df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        # 3. SMR Grade (가속도 백분위 순위 합산, 가중치 적용)
-        df['smr_val'] = (df['sales_acc'].rank(pct=True) * 0.4) + \
-                        (df['margin_acc'].rank(pct=True) * 0.3) + \
-                        (df['roe_acc'].rank(pct=True) * 0.2) + \
-                        (df['pretax_acc'].rank(pct=True) * 0.1)
+        # 3. SMR Grade 수정 (결측치 하위 처리 및 적자기업 패널티)
+        df['smr_val'] = (df['sales_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.4) + \
+                        (df['margin_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.3) + \
+                        (df['roe_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.2) + \
+                        (df['pretax_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.1)
+                        
+        # 적자 기업 패널티: SMR 총점에서 1.0을 빼서 무조건 하위권으로 밀어냅니다.
+        df.loc[df['is_profitable'] == False, 'smr_val'] -= 1.0
+        
         df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
         # 4. Industry RS Score (시가총액 가중 평균 적용)
-        # 산업군별 (RS * 시총)의 합 / 시총의 합
         df['weighted_rs'] = df['rs_raw'] * df['mcap']
         industry_data = df.groupby('industry').apply(
             lambda x: x['weighted_rs'].sum() / x['mcap'].sum() if x['mcap'].sum() > 0 else x['rs_raw'].mean()
