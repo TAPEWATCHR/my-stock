@@ -99,12 +99,16 @@ def update_database():
                     if len(hist) < 63: continue
 
                     now_price = hist['Close'].iloc[-1]
+                    # [수정됨] 1개월(약 21일) 인덱스 추가 및 적용
+                    idx_21 = -21 if len(hist) >= 21 else 0
                     idx_63 = -63 if len(hist) >= 63 else 0
                     idx_126 = -126 if len(hist) >= 126 else 0
                     idx_189 = -189 if len(hist) >= 189 else 0
                     idx_252 = -252 if len(hist) >= 252 else 0
 
-                    rs_raw = (now_price / hist['Close'].iloc[idx_63] * 2) + \
+                    # [수정됨] 1개월(idx_21) 수익률 추가 및 가중치 * 2 적용
+                    rs_raw = (now_price / hist['Close'].iloc[idx_21] * 2) + \
+                             (now_price / hist['Close'].iloc[idx_63] * 2) + \
                              (now_price / hist['Close'].iloc[idx_126]) + \
                              (now_price / hist['Close'].iloc[idx_189]) + \
                              (now_price / hist['Close'].iloc[idx_252])
