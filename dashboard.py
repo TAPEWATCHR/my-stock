@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # TAPEWATCHR/my-stock 대시보드 개선판
 # 1) 사이드바 필터 UX  2) 테이블/재무 스타일  3) 개요 가독성  4) RS 차트 Y축 0~100 고정
-# + 추가 개선: 공백 추가, 선택 시 빨간색 강조, 버튼 크기 축소, 반응형 넓이 적용
+# + 추가 개선: 공백 추가, 선택 시 빨간색 강조, 버튼 크기 축소, 반응형 넓이 적용, Sector -> Industry 반영
 
 import streamlit as st
 import pandas as pd
@@ -141,7 +141,7 @@ if not df.empty:
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50)
 
-            # SMR 등급: 1. 공백 추가, 2. 선택 시 type="primary"로 빨간색 적용
+            # SMR 등급
             if "smr_sel" not in st.session_state:
                 st.session_state.smr_sel = ["A", "B"]
             st.caption("SMR 등급")
@@ -149,8 +149,8 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with smr_cols1[i]:
                     sel = g in st.session_state.smr_sel
-                    lbl = f"● {g}" if sel else f"○ {g}"  # 공백 추가
-                    btn_type = "primary" if sel else "secondary" # 선택 시 primary 클래스 부여
+                    lbl = f"● {g}" if sel else f"○ {g}" 
+                    btn_type = "primary" if sel else "secondary"
                     if st.button(lbl, key=f"smr_{g}", type=btn_type):
                         if g in st.session_state.smr_sel:
                             st.session_state.smr_sel = [x for x in st.session_state.smr_sel if x != g]
@@ -161,7 +161,7 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with smr_cols2[i]:
                     sel = g in st.session_state.smr_sel if g != "전체" else set(st.session_state.smr_sel) == {"A","B","C","D","E"}
-                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    lbl = f"● {g}" if sel else f"○ {g}" 
                     btn_type = "primary" if sel else "secondary"
                     if st.button(lbl, key=f"smr_{g}", type=btn_type):
                         if g == "전체":
@@ -176,7 +176,7 @@ if not df.empty:
 
             st.divider()
 
-            # 수급(AD) 등급: 1. 공백 추가, 2. 선택 시 type="primary" 적용
+            # 수급(AD) 등급
             if "ad_sel" not in st.session_state:
                 st.session_state.ad_sel = ["A", "B", "C"]
             st.caption("수급(AD) 등급")
@@ -184,7 +184,7 @@ if not df.empty:
             for i, g in enumerate(["A", "B", "C"]):
                 with ad_cols1[i]:
                     sel = g in st.session_state.ad_sel
-                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    lbl = f"● {g}" if sel else f"○ {g}" 
                     btn_type = "primary" if sel else "secondary"
                     if st.button(lbl, key=f"ad_{g}", type=btn_type):
                         if g in st.session_state.ad_sel:
@@ -196,7 +196,7 @@ if not df.empty:
             for i, g in enumerate(["D", "E", "전체"]):
                 with ad_cols2[i]:
                     sel = g in st.session_state.ad_sel if g != "전체" else set(st.session_state.ad_sel) == {"A","B","C","D","E"}
-                    lbl = f"● {g}" if sel else f"○ {g}" # 공백 추가
+                    lbl = f"● {g}" if sel else f"○ {g}" 
                     btn_type = "primary" if sel else "secondary"
                     if st.button(lbl, key=f"ad_{g}", type=btn_type):
                         if g == "전체":
@@ -211,40 +211,45 @@ if not df.empty:
 
         st.divider()
         with st.expander("🏢 산업군 필터"):
-            all_sec = sorted(df['sector'].unique())
-            if "sector_sel" not in st.session_state:
-                st.session_state.sector_sel = [s for s in all_sec if s != 'Unknown']
-            all_sel = set(st.session_state.sector_sel) == set(all_sec)
-            lbl_sec_all = "● 전체" if all_sel else "○ 전체" # 공백 추가
+            # 여기서 sector를 industry로 변경
+            all_ind = sorted(df['industry'].unique())
+            if "industry_sel" not in st.session_state:
+                st.session_state.industry_sel = [s for s in all_ind if s != 'Unknown']
+            all_sel = set(st.session_state.industry_sel) == set(all_ind)
+            lbl_ind_all = "● 전체" if all_sel else "○ 전체"
             btn_type_all = "primary" if all_sel else "secondary"
-            if st.button(lbl_sec_all, key="sec_all", type=btn_type_all):
-                st.session_state.sector_sel = list(all_sec) if not all_sel else []
+            
+            if st.button(lbl_ind_all, key="ind_all", type=btn_type_all):
+                st.session_state.industry_sel = list(all_ind) if not all_sel else []
                 st.rerun()
+                
             st.caption("산업군 (클릭하여 선택/해제)")
             n_col = 2
-            for j in range(0, len(all_sec), n_col):
+            for j in range(0, len(all_ind), n_col):
                 cols = st.columns(n_col)
                 for k in range(n_col):
                     idx = j + k
-                    if idx < len(all_sec):
-                        s = all_sec[idx]
+                    if idx < len(all_ind):
+                        s = all_ind[idx]
                         with cols[k]:
-                            sel = s in st.session_state.sector_sel
-                            lbl = f"● {s}" if sel else f"○ {s}" # 공백 추가
+                            sel = s in st.session_state.industry_sel
+                            lbl = f"● {s}" if sel else f"○ {s}" 
                             btn_type = "primary" if sel else "secondary"
-                            if st.button(lbl, key=f"sec_{s}", type=btn_type):
-                                if s in st.session_state.sector_sel:
-                                    st.session_state.sector_sel = [x for x in st.session_state.sector_sel if x != s]
+                            if st.button(lbl, key=f"ind_{s}", type=btn_type):
+                                if s in st.session_state.industry_sel:
+                                    st.session_state.industry_sel = [x for x in st.session_state.industry_sel if x != s]
                                 else:
-                                    st.session_state.sector_sel = sorted(st.session_state.sector_sel + [s])
+                                    st.session_state.industry_sel = sorted(st.session_state.industry_sel + [s])
                                 st.rerun()
-            sel_sec = st.session_state.sector_sel
+            sel_ind = st.session_state.industry_sel
 
+        # 필터링 조건에서도 industry 사용
         mask = (df['price'] >= min_price) & \
                (df['adv_50'] >= min_adv_m * 1_000_000) & \
                (df['rs_score'] >= rs_min) & \
                (df['industry_rs_score'] >= ind_rs_min) & \
-               (df['smr_grade'].isin(smr_f)) & (df['ad_rating'].isin(ad_f)) & (df['sector'].isin(sel_sec))
+               (df['smr_grade'].isin(smr_f)) & (df['ad_grade'].isin(ad_f)) & (df['industry'].isin(sel_ind))
+        
         f_df = df[mask].sort_values('rs_score', ascending=False)
 
     col_l, col_r = st.columns([4, 3])
@@ -252,16 +257,17 @@ if not df.empty:
         st.subheader(f"Leaders ({len(f_df)})")
         display_list = f_df.copy()
         display_list['ADV($M)'] = (display_list['adv_50'] / 1_000_000).round(1)
+        # 테이블 컬럼명 변경 (sector -> industry, ad_rating -> ad_grade)
         display_list = display_list.rename(columns={
             'symbol': 'Ticker', 'price': 'Price', 'rs_score': 'RS',
-            'smr_grade': 'SMR', 'ad_rating': 'AD', 'industry_rs_score': 'Ind RS', 'sector': 'Sector'
+            'smr_grade': 'SMR', 'ad_grade': 'AD', 'industry_rs_score': 'Ind RS', 'industry': 'Industry'
         })
         sel = st.dataframe(
-            display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Sector']],
+            display_list[['Ticker', 'Price', 'ADV($M)', 'RS', 'SMR', 'AD', 'Ind RS', 'Industry']],
             hide_index=True, on_select="rerun", selection_mode="single-row", height=850,
-            use_container_width=True, # 넓은 화면 100% 사용 보장
+            use_container_width=True, 
             column_config={
-                "Sector": st.column_config.TextColumn("Sector", width=360),
+                "Industry": st.column_config.TextColumn("Industry", width=360),
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                 "Price": st.column_config.NumberColumn("Price", width="small"),
                 "ADV($M)": st.column_config.NumberColumn("ADV($M)", width="small"),
@@ -278,7 +284,7 @@ if not df.empty:
             ticker = row['symbol']
 
             st.markdown(f"""
-            **Stock RS** {row['rs_score']} · **SMR** {row['smr_grade']} · **AD** {row['ad_rating']} · **Ind RS** {row['industry_rs_score']} · {row['sector']}
+            **Stock RS** {row['rs_score']} · **SMR** {row['smr_grade']} · **AD** {row['ad_grade']} · **Ind RS** {row['industry_rs_score']} · {row['industry']}
             """, unsafe_allow_html=True)
 
             q_inc, a_inc, q_bal, a_bal, info = get_detailed_info(ticker)
@@ -378,7 +384,7 @@ if not df.empty:
                     st.checkbox(f"**C**: 분기 EPS 25%↑ ({cur_eps_growth:.1f}%)", value=cur_eps_growth >= 25)
                     st.checkbox("**A**: 연간 이익 증가 (ROE 17%↑)", value=True)
                     st.checkbox("**N**: 신고가 또는 새로운 재료", value=True)
-                    st.checkbox(f"**S**: 공급과 수요 (AD: {row['ad_rating']})", value=row['ad_rating'] in ['A', 'B'])
+                    st.checkbox(f"**S**: 공급과 수요 (AD: {row['ad_grade']})", value=row['ad_grade'] in ['A', 'B'])
                     st.checkbox(f"**L**: 시장 주도주 (RS: {row['rs_score']})", value=row['rs_score'] >= 80)
                     st.checkbox(f"**I**: 기관 매집 (SMR: {row['smr_grade']})", value=row['smr_grade'] in ['A', 'B'])
                     st.checkbox("**M**: 시장 대세 상승 확인", value=True)
