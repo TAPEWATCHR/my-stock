@@ -50,9 +50,8 @@ def calculate_ad_raw(hist):
 
 def get_smr_acceleration(t_obj):
     """최근 3분기/3개년 재무 데이터를 통한 가속도(Delta) 및 흑자 여부 계산"""
-    # 0 대신 NaN을 기본값으로 하여, 결측치가 중간 등급으로 계산되는 착시를 막습니다.
     sales_accel, margin_accel, pretax_accel, roe_accel = np.nan, np.nan, np.nan, np.nan
-    is_profitable = False # 최근 흑자 여부 판단용
+    is_profitable = False 
     
     try:
         # 1. 분기별 데이터 (매출, 세후이익)
@@ -61,7 +60,6 @@ def get_smr_acceleration(t_obj):
             rev = qf.loc['Total Revenue'].dropna().values
             net = qf.loc['Net Income'].dropna().values
             
-            # 최근 분기 순이익이 0보다 크면 흑자로 판별
             if len(net) > 0 and net[0] > 0:
                 is_profitable = True
                 
@@ -99,7 +97,8 @@ def get_smr_acceleration(t_obj):
                 roe_accel = (roe0 - roe1) + (roe1 - roe2)
 
     except Exception:
-        pass # 재무 데이터가 없는 종목은 그대로 NaN 유지
+        # 데이터가 비어있어 발생하는 정상적인 처리 (Pass)
+        pass 
 
     return sales_accel, margin_accel, pretax_accel, roe_accel, is_profitable
 
@@ -110,7 +109,7 @@ def get_tickers():
             return list(set(tickers))
     else:
         print("Warning: 'tickers.txt' not found. Using sample tickers.")
-        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'TNGX'] # 테스트를 위해 TNGX 추가
+        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'TNGX'] 
 
 def update_database():
     tickers = get_tickers()
@@ -156,17 +155,28 @@ def update_database():
                     industry = industry_master.get(ticker, "Unknown")
                     mcap = 1 
                     
-                    # 재무 가속도 데이터 및 흑자여부 추출
+                    # --- 야후 파이낸스 API 차단 방어 (Retry 로직) ---
                     t_obj = yf.Ticker(ticker)
-                    sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
+                    sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = np.nan, np.nan, np.nan, np.nan, False
+                    info = {}
                     
-                    try:
-                        info = t_obj.info
-                        if info:
-                            mcap = info.get('marketCap', 1)
-                            if info.get('industry'): industry = info.get('industry')
-                    except Exception:
-                        pass
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            # 여기서 서버 요청이 이루어짐
+                            sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
+                            info = t_obj.info
+                            break # 정상적으로 데이터를 가져오면 탈출
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                time.sleep(2) # 차단당하면 2초 대기 후 다시 시도
+                            else:
+                                print(f"  > [API 경고] {ticker} 세부 정보 수집 실패 (서버 지연)")
+                    
+                    # 수집된 info에서 정보 추출
+                    if info:
+                        mcap = info.get('marketCap', 1)
+                        if info.get('industry'): industry = info.get('industry')
 
                     if pd.isna(industry) or industry == "nan": industry = "Unknown"
 
@@ -175,14 +185,18 @@ def update_database():
                         'ad_raw': ad_raw, 'adv_50': adv_50, 'mcap': float(mcap),
                         'sales_acc': sales_acc, 'margin_acc': margin_acc, 
                         'pretax_acc': pretax_acc, 'roe_acc': roe_acc,
-                        'is_profitable': is_profitable, # 추가된 필드
+                        'is_profitable': is_profitable,
                         'industry': industry
                     })
+                    
+                    # 종목당 아주 짧은 딜레이를 주어 API 차단을 근본적으로 예방
+                    time.sleep(0.3) 
+
                 except Exception as inner_e:
                     continue 
 
             print(f" > {min(i+chunk_size, len(tickers))} / {len(tickers)} 완료 | 최근 산업군 예시: {industry}")
-            time.sleep(1) # API Rate limit 방지
+            time.sleep(1) # 청크 단위 휴식
 
         except Exception as e:
             print(f"Chunk Error: {e}")
@@ -203,7 +217,6 @@ def update_database():
                         (df['roe_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.2) + \
                         (df['pretax_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.1)
                         
-        # 적자 기업 패널티: SMR 총점에서 1.0을 빼서 무조건 하위권으로 밀어냅니다.
         df.loc[df['is_profitable'] == False, 'smr_val'] -= 1.0
         
         df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
@@ -221,7 +234,6 @@ def update_database():
 
         conn = sqlite3.connect('ibd_system.db')
         try:
-            # DB 저장 컬럼 정리
             save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
             final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
             
