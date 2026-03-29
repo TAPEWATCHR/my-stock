@@ -234,11 +234,21 @@ def update_database():
 
         conn = sqlite3.connect('ibd_system.db')
         try:
+            # === [데이터베이스 저장 및 업데이트 로직 변경 구간] ===
             save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
             final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
             
             today_str = datetime.now().strftime('%Y-%m-%d')
-            history_df = final_df[['symbol', 'rs_score']].copy()
+            
+            # 기존 rs_history 테이블에 industry_rs_score 컬럼이 없다면 추가 시도
+            try:
+                conn.execute("ALTER TABLE rs_history ADD COLUMN industry_rs_score INTEGER;")
+            except sqlite3.OperationalError:
+                # 이미 컬럼이 존재하면 무시하고 넘어감
+                pass
+            
+            # 과거 이력 저장용 데이터프레임 구성 (industry_rs_score 포함)
+            history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
             history_df['date'] = today_str
             history_df.to_sql('rs_history', conn, if_exists='append', index=False)
             
