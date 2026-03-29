@@ -341,21 +341,49 @@ if not df.empty:
                     st.dataframe(format_fin_df(pd.concat([q_inc, q_bal]) if not q_inc.empty else pd.DataFrame(), 'Q'), use_container_width=True)
 
                 with t_check:
-                    cur_eps_growth = calc_growth(q_eps, 4).iloc[0] if len(q_eps) >= 5 else 0
                     st.subheader("🛡️ 주도주 판별 시스템")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("### 🟢 CANSLIM (오닐)")
-                        st.checkbox(f"**C**: 분기 EPS 25%↑ ({cur_eps_growth:.1f}%)", value=cur_eps_growth >= 25)
-                        st.checkbox("**A**: 연간 ROE 17%↑", value=True)
-                        st.checkbox("**S**: 수급(AD: {row['ad_grade']})", value=row['ad_grade'] in ['A', 'B'])
-                        st.checkbox("**L**: RS 80↑", value=row['rs_score'] >= 80)
-                        st.checkbox("**I**: SMR A/B", value=row['smr_grade'] in ['A', 'B'])
-                    with c2:
-                        st.markdown("### 🔵 트렌드 템플릿 (미너비니)")
-                        st.checkbox("1. 주가 > 150/200 MA", value=True)
-                        st.checkbox("4. 50MA > 150/200 MA", value=True)
-                        st.checkbox(f"7. RS 80↑ (현재: {row['rs_score']})", value=row['rs_score'] >= 80)
+                    
+                    # --- [계산] 기술적 지표 (미너비니 템플릿용) ---
+                    hist = yf.Ticker(ticker).history(period="1y")
+                    if not hist.empty:
+                        last_price = hist['Close'].iloc[-1]
+                        ma50 = hist['Close'].rolling(50).mean().iloc[-1]
+                        ma150 = hist['Close'].rolling(150).mean().iloc[-1]
+                        ma200 = hist['Close'].rolling(200).mean().iloc[-1]
+                        ma200_prev = hist['Close'].rolling(200).mean().iloc[-20] if len(hist) > 20 else ma200
+                        low_52w = hist['Close'].min()
+                        high_52w = hist['Close'].max()
+                        
+                        # 성장률 및 재무 데이터 재계산 (탭 상단에 정의된 변수 활용)
+                        cur_q_eps_growth = calc_growth(q_eps, 4).iloc[0] if len(q_eps) >= 5 else 0
+                        ann_eps_growth = calc_growth(a_eps, 1).iloc[0] if len(a_eps) >= 2 else 0
+                        roe = info.get('returnOnEquity', 0) * 100
+                        inst_own = info.get('heldPercentInstitutions', 0) * 100
+
+                        c1, c2 = st.columns(2)
+                        
+                        with c1:
+                            st.markdown("### 🟢 CANSLIM (오닐)")
+                            st.checkbox(f"**C**: 분기 EPS 25%↑ ({cur_q_eps_growth:.1f}%)", value=cur_q_eps_growth >= 25)
+                            st.checkbox(f"**A**: 연간 EPS 25%↑ 또는 ROE 17%↑ ({ann_eps_growth:.1f}% / {roe:.1f}%)", value=ann_eps_growth >= 25 or roe >= 17)
+                            st.checkbox(f"**N**: 52주 고가 근접 (현재가 > 고가 90%)", value=last_price >= (high_52w * 0.9))
+                            st.checkbox(f"**S**: 수급 양호 (AD 등급: {row['ad_grade']})", value=row['ad_grade'] in ['A', 'B'])
+                            st.checkbox(f"**L**: 시장 주도주 (RS 80↑: {row['rs_score']})", value=row['rs_score'] >= 80)
+                            st.checkbox(f"**I**: 기관 관심 (보유 비중: {inst_own:.1f}%)", value=inst_own > 30)
+                            st.info("💡 **M(Market)**: 현재 지수의 추세를 확인하세요.")
+
+                        with c2:
+                            st.markdown("### 🔵 트렌드 템플릿 (미너비니)")
+                            st.checkbox("1. 주가 > 150MA & 200MA", value=last_price > ma150 and last_price > ma200)
+                            st.checkbox("2. 150MA > 200MA", value=ma150 > ma200)
+                            st.checkbox("3. 200MA 상승세 (1개월 전 대비)", value=ma200 > ma200_prev)
+                            st.checkbox("4. 50MA > 150MA & 200MA", value=ma50 > ma150 and ma50 > ma200)
+                            st.checkbox("5. 주가 > 50MA", value=last_price > ma50)
+                            st.checkbox(f"6. 저가 대비 30%↑ (현재: {((last_price/low_52w)-1)*100:.1f}%)", value=last_price >= low_52w * 1.3)
+                            st.checkbox(f"7. 고가 대비 25% 이내 (현재: -{((high_52w/last_price)-1)*100:.1f}%)", value=last_price >= high_52w * 0.75)
+                            st.checkbox(f"8. RS 점수 70 이상", value=row['rs_score'] >= 70)
+                    else:
+                        st.warning("분석을 위한 충분한 가격 데이터가 없습니다.")
 
                 with t_biz:
                     st.subheader("🏢 개요")
