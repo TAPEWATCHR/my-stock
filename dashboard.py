@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # TAPEWATCHR/my-stock 대시보드 개선판
 # 1) 사이드바 필터 UX  2) 테이블/재무 스타일  3) 개요 가독성  4) RS 차트 Y축 0~100 고정
+# + 종목 RS 및 산업군(Ind) RS 다중 라인 차트 추가
 # + 에러 수정: 빈 데이터 반환 방지, yfinance Rate Limit 대응 자동 재시도 및 UI 경고창 추가
 
 import streamlit as st
@@ -99,7 +100,8 @@ def get_rs_history(ticker):
         return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
-        query = f"SELECT date, rs_score FROM rs_history WHERE symbol = '{ticker}' ORDER BY date ASC"
+        # DB에서 rs_score와 industry_rs_score 등 모든 기록을 불러옵니다
+        query = f"SELECT * FROM rs_history WHERE symbol = '{ticker}' ORDER BY date ASC"
         hist_df = pd.read_sql(query, conn)
     except Exception:
         hist_df = pd.DataFrame()
@@ -298,7 +300,7 @@ if not df.empty:
             **Stock RS** {row['rs_score']} · **SMR** {row['smr_grade']} · **AD** {row['ad_grade']} · **Ind RS** {row['industry_rs_score']} · {row['industry']}
             """, unsafe_allow_html=True)
 
-            # --- 에러 핸들링 부분 추가 ---
+            # --- 에러 핸들링 부분 ---
             try:
                 # 데이터를 로드 시도
                 with st.spinner(f"'{ticker}' 상세 재무 데이터를 불러오는 중..."):
@@ -335,16 +337,45 @@ if not df.empty:
                         </script>
                         """, height=710)
 
-                    st.markdown("#### 📈 RS 점수 추세 (1~100 고정)", unsafe_allow_html=True)
+                    st.markdown("#### 📈 RS & Industry RS 추세", unsafe_allow_html=True)
                     rs_hist_df = get_rs_history(ticker)
-                    if not rs_hist_df.empty and len(rs_hist_df) > 1:
+                    
+                    if not rs_hist_df.empty and len(rs_hist_df) > 1 and 'rs_score' in rs_hist_df.columns:
                         rs_hist_df = rs_hist_df.copy()
                         rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
                         rs_hist_df['rs_score'] = rs_hist_df['rs_score'].clip(0, 100)
-                        chart = alt.Chart(rs_hist_df).mark_line(color='#64ffda', strokeWidth=2).encode(
-                            x=alt.X('date:T', title='날짜'),
-                            y=alt.Y('rs_score:Q', title='RS', scale=alt.Scale(domain=[0, 100]))
-                        ).properties(height=320)
+                        
+                        # DB에 industry_rs_score 열이 존재하는 경우 (다중 라인 차트 생성)
+                        if 'industry_rs_score' in rs_hist_df.columns:
+                            rs_hist_df['industry_rs_score'] = rs_hist_df['industry_rs_score'].clip(0, 100)
+                            
+                            # Altair에서 다중 라인을 그리기 위해 데이터를 melt (재구조화)
+                            plot_df = rs_hist_df[['date', 'rs_score', 'industry_rs_score']].melt(
+                                id_vars='date', var_name='Type', value_name='Score'
+                            )
+                            # 범례 표시를 보기 쉽게 매핑
+                            plot_df['Type'] = plot_df['Type'].map({
+                                'rs_score': 'Stock RS', 
+                                'industry_rs_score': 'Industry RS'
+                            })
+                            
+                            chart = alt.Chart(plot_df).mark_line(strokeWidth=2).encode(
+                                x=alt.X('date:T', title='날짜'),
+                                y=alt.Y('Score:Q', title='RS 점수', scale=alt.Scale(domain=[0, 100])),
+                                color=alt.Color(
+                                    'Type:N', 
+                                    title='범례',
+                                    scale=alt.Scale(domain=['Stock RS', 'Industry RS'], range=['#64ffda', '#ff7676'])
+                                )
+                            ).properties(height=320)
+                            
+                        # DB에 아직 industry_rs_score가 없는 경우 (안전 장치: 단일 라인)
+                        else:
+                            chart = alt.Chart(rs_hist_df).mark_line(color='#64ffda', strokeWidth=2).encode(
+                                x=alt.X('date:T', title='날짜'),
+                                y=alt.Y('rs_score:Q', title='RS 점수', scale=alt.Scale(domain=[0, 100]))
+                            ).properties(height=320)
+                            
                         st.altair_chart(chart, use_container_width=True)
                     else:
                         st.info("⏳ 오늘부터 RS 점수가 누적됩니다. 내일 자동 업데이트 이후부터 추세선이 나타납니다.")
