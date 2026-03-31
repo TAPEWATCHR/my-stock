@@ -7,6 +7,12 @@ import os
 import requests
 import io
 import numpy as np
+import requests_cache
+
+# --- [추가] 브라우저 위장 및 캐시 세션 설정 ---
+# 하루(86400초) 동안 동일한 요청은 야후 서버에 안 가고 캐시에서 바로 가져옵니다.
+session = requests_cache.CachedSession('yfinance.cache')
+session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 def get_industry_master_map():
     """Sector 대신 더 세분화된 Industry 데이터를 가져옵니다."""
@@ -97,7 +103,6 @@ def get_smr_acceleration(t_obj):
                 roe_accel = (roe0 - roe1) + (roe1 - roe2)
 
     except Exception:
-        # 데이터가 비어있어 발생하는 정상적인 처리 (Pass)
         pass 
 
     return sales_accel, margin_accel, pretax_accel, roe_accel, is_profitable
@@ -123,7 +128,8 @@ def update_database():
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
-            data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True)
+            # 다운로드 시 session 적용
+            data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True, session=session)
             if data.empty: continue
 
             for ticker in chunk:
@@ -155,25 +161,23 @@ def update_database():
                     industry = industry_master.get(ticker, "Unknown")
                     mcap = 1 
                     
-                    # --- 야후 파이낸스 API 차단 방어 (Retry 로직) ---
-                    t_obj = yf.Ticker(ticker)
+                    # --- 야후 파이낸스 API 차단 방어 (Retry 로직 & 세션 적용) ---
+                    t_obj = yf.Ticker(ticker, session=session)
                     sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = np.nan, np.nan, np.nan, np.nan, False
                     info = {}
                     
                     max_retries = 3
                     for attempt in range(max_retries):
                         try:
-                            # 여기서 서버 요청이 이루어짐
                             sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
                             info = t_obj.info
-                            break # 정상적으로 데이터를 가져오면 탈출
+                            break 
                         except Exception as e:
                             if attempt < max_retries - 1:
-                                time.sleep(2) # 차단당하면 2초 대기 후 다시 시도
+                                time.sleep(5) # 차단 방지를 위해 대기 시간 증가
                             else:
                                 print(f"  > [API 경고] {ticker} 세부 정보 수집 실패 (서버 지연)")
                     
-                    # 수집된 info에서 정보 추출
                     if info:
                         mcap = info.get('marketCap', 1)
                         if info.get('industry'): industry = info.get('industry')
@@ -189,14 +193,13 @@ def update_database():
                         'industry': industry
                     })
                     
-                    # 종목당 아주 짧은 딜레이를 주어 API 차단을 근본적으로 예방
                     time.sleep(0.3) 
 
                 except Exception as inner_e:
                     continue 
 
             print(f" > {min(i+chunk_size, len(tickers))} / {len(tickers)} 완료 | 최근 산업군 예시: {industry}")
-            time.sleep(1) # 청크 단위 휴식
+            time.sleep(1) 
 
         except Exception as e:
             print(f"Chunk Error: {e}")
@@ -205,23 +208,17 @@ def update_database():
     if all_results:
         df = pd.DataFrame(all_results)
         
-        # 1. 개별 종목 RS Score (1~99)
         df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-        
-        # 2. AD Rating (상대평가 백분위로 A~E 부여)
         df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        # 3. SMR Grade 수정 (결측치 하위 처리 및 적자기업 패널티)
         df['smr_val'] = (df['sales_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.4) + \
                         (df['margin_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.3) + \
                         (df['roe_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.2) + \
                         (df['pretax_acc'].rank(pct=True, na_option='bottom').fillna(0) * 0.1)
                         
         df.loc[df['is_profitable'] == False, 'smr_val'] -= 1.0
-        
         df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
-        # 4. Industry RS Score (시가총액 가중 평균 적용)
         df['weighted_rs'] = df['rs_raw'] * df['mcap']
         industry_data = df.groupby('industry').apply(
             lambda x: x['weighted_rs'].sum() / x['mcap'].sum() if x['mcap'].sum() > 0 else x['rs_raw'].mean()
@@ -234,20 +231,16 @@ def update_database():
 
         conn = sqlite3.connect('ibd_system.db')
         try:
-            # === [데이터베이스 저장 및 업데이트 로직 변경 구간] ===
             save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
             final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
             
             today_str = datetime.now().strftime('%Y-%m-%d')
             
-            # 기존 rs_history 테이블에 industry_rs_score 컬럼이 없다면 추가 시도
             try:
                 conn.execute("ALTER TABLE rs_history ADD COLUMN industry_rs_score INTEGER;")
             except sqlite3.OperationalError:
-                # 이미 컬럼이 존재하면 무시하고 넘어감
                 pass
             
-            # 과거 이력 저장용 데이터프레임 구성 (industry_rs_score 포함)
             history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
             history_df['date'] = today_str
             history_df.to_sql('rs_history', conn, if_exists='append', index=False)
