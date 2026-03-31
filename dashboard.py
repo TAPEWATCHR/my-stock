@@ -7,8 +7,13 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 import time
+import requests_cache
 
-# --- [추가] 즐겨찾기 데이터베이스 함수 ---
+# --- [추가] 대시보드용 세션 설정 ---
+yf_session = requests_cache.CachedSession('yfinance_dashboard.cache')
+yf_session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+# --- 즐겨찾기 데이터베이스 함수 ---
 def init_fav_db():
     conn = sqlite3.connect('ibd_system.db')
     cursor = conn.cursor()
@@ -38,7 +43,6 @@ def get_favorites():
 
 init_fav_db()
 
-# 데이터 페치 실패 시 커스텀 에러
 class YFDataFetchError(Exception):
     pass
 
@@ -57,7 +61,7 @@ def translate_to_korean(text):
     except Exception:
         return text
 
-# --- 0. 페이지 설정 ---
+# --- 페이지 설정 ---
 st.set_page_config(layout="wide", page_title="Institutional Stock Terminal")
 
 BG_COLOR = "#161C27"
@@ -88,7 +92,7 @@ h1, h2, h3, h4, h5, h6, p, label, span, .stCheckbox {{ color: #ccd6f6 !important
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 유틸리티 함수 ---
+# --- 유틸리티 함수 ---
 FIN_MAP = {
     'Total Revenue': '매출액', 'Operating Income': '영업이익', 'Net Income': '당기순이익',
     'EBITDA': 'EBITDA', 'Basic EPS': 'EPS', 'Total Assets': '총 자산',
@@ -128,19 +132,18 @@ def get_detailed_info(ticker):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            s = yf.Ticker(ticker)
+            s = yf.Ticker(ticker, session=yf_session)
             return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, s.info
         except Exception as e:
             if attempt < max_retries - 1: time.sleep(2)
             else: raise YFDataFetchError(f"Rate Limit or Fetch Error: {str(e)}")
 
-# --- 3. 메인 화면 ---
+# --- 메인 화면 ---
 df = get_data()
 if not df.empty:
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         with st.expander("🔍 필터 설정", expanded=True):
-            # [추가] 즐겨찾기 필터
             show_only_favs = st.checkbox("⭐ 즐겨찾기만 보기", value=False)
             
             min_price = st.number_input("최소 주가 ($)", min_value=0.0, value=10.0, step=1.0)
@@ -148,7 +151,6 @@ if not df.empty:
             rs_min = st.slider("최소 RS 점수", 1, 99, 80)
             ind_rs_min = st.slider("최소 산업군 RS", 1, 99, 50)
 
-            # SMR 등급 (사용자 원본 로직)
             if "smr_sel" not in st.session_state: st.session_state.smr_sel = ["A", "B"]
             st.caption("SMR 등급")
             smr_cols1 = st.columns(3)
@@ -171,7 +173,6 @@ if not df.empty:
                         st.rerun()
 
             st.divider()
-            # 수급(AD) 등급 (사용자 원본 로직)
             if "ad_sel" not in st.session_state: st.session_state.ad_sel = ["A", "B", "C"]
             st.caption("수급(AD) 등급")
             ad_cols1 = st.columns(3)
@@ -208,7 +209,6 @@ if not df.empty:
                     else: st.session_state.industry_sel.append(s)
                     st.rerun()
 
-        # 필터 마스크 적용
         mask = (df['price'] >= min_price) & \
                (df['adv_50'] >= min_adv_m * 1_000_000) & \
                (df['rs_score'] >= rs_min) & \
@@ -217,7 +217,6 @@ if not df.empty:
                (df['ad_grade'].isin(st.session_state.ad_sel)) & \
                (df['industry'].isin(st.session_state.industry_sel))
         
-        # [추가] 즐겨찾기 필터 적용
         if show_only_favs:
             mask = mask & (df['symbol'].isin(get_favorites()))
         
@@ -229,7 +228,6 @@ if not df.empty:
         display_list = f_df.copy()
         display_list['ADV($M)'] = (display_list['adv_50'] / 1_000_000).round(1)
         
-        # [추가] 목록에 즐겨찾기 별표 표시
         fav_list = get_favorites()
         display_list['Ticker'] = display_list['symbol'].apply(lambda x: f"⭐ {x}" if x in fav_list else x)
         
@@ -253,7 +251,6 @@ if not df.empty:
             row = f_df.iloc[sel.selection.rows[0]]
             ticker = row['symbol']
 
-            # [추가] 종목 상세 헤더 및 즐겨찾기 버튼
             fav_list = get_favorites()
             is_fav = ticker in fav_list
             c_header, c_fav = st.columns([4, 1])
@@ -343,8 +340,11 @@ if not df.empty:
                 with t_check:
                     st.subheader("🛡️ 주도주 판별 시스템")
                     
-                    # --- [계산] 기술적 지표 (미너비니 템플릿용) ---
-                    hist = yf.Ticker(ticker).history(period="1y")
+                    try:
+                        hist = yf.Ticker(ticker, session=yf_session).history(period="1y")
+                    except Exception:
+                        hist = pd.DataFrame()
+
                     if not hist.empty:
                         last_price = hist['Close'].iloc[-1]
                         ma50 = hist['Close'].rolling(50).mean().iloc[-1]
@@ -354,7 +354,6 @@ if not df.empty:
                         low_52w = hist['Close'].min()
                         high_52w = hist['Close'].max()
                         
-                        # 성장률 및 재무 데이터 재계산 (탭 상단에 정의된 변수 활용)
                         cur_q_eps_growth = calc_growth(q_eps, 4).iloc[0] if len(q_eps) >= 5 else 0
                         ann_eps_growth = calc_growth(a_eps, 1).iloc[0] if len(a_eps) >= 2 else 0
                         roe = info.get('returnOnEquity', 0) * 100
