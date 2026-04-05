@@ -8,14 +8,26 @@ import requests
 import io
 import numpy as np
 import requests_cache
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# --- [추가] 브라우저 위장 및 캐시 세션 설정 ---
-# 하루(86400초) 동안 동일한 요청은 야후 서버에 안 가고 캐시에서 바로 가져옵니다.
-session = requests_cache.CachedSession('yfinance.cache')
-session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# --- [핵심 수정] 백엔드 업데이트용 세션 ---
+session = requests_cache.CachedSession('yfinance.cache', expire_after=86400)
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1.0, 
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "OPTIONS"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+})
 
 def get_industry_master_map():
-    """Sector 대신 더 세분화된 Industry 데이터를 가져옵니다."""
     industry_map = {}
     url2 = "https://raw.githubusercontent.com/yumoxu/stock-market-analysis/master/data/nasdaq_screener.csv"
     try:
@@ -35,7 +47,6 @@ def get_industry_master_map():
     return industry_map
 
 def calculate_ad_raw(hist):
-    """50일 평균 거래량과 가격 변동을 이용한 기관 매집(AD) 에너지 계산"""
     if len(hist) < 65: return 0
     df = hist.copy()
     df['daily_return'] = df['Close'].pct_change()
@@ -45,22 +56,18 @@ def calculate_ad_raw(hist):
     if len(df) < 65: return 0
     df = df.tail(65)
     
-    # 당일 매집/분산 에너지 = (당일거래량 / 50일평균거래량) * 당일수익률
     df['ad_daily'] = (df['Volume'] / df['vol_50ma']) * df['daily_return'] * 100
     
-    # 최근 20일에 70% 가중치, 이전 45일에 30% 가중치 부여
     recent_20 = df['ad_daily'].tail(20).sum() * 0.7
     past_45 = df['ad_daily'].head(45).sum() * 0.3
     
     return recent_20 + past_45
 
 def get_smr_acceleration(t_obj):
-    """최근 3분기/3개년 재무 데이터를 통한 가속도(Delta) 및 흑자 여부 계산"""
     sales_accel, margin_accel, pretax_accel, roe_accel = np.nan, np.nan, np.nan, np.nan
     is_profitable = False 
     
     try:
-        # 1. 분기별 데이터 (매출, 세후이익)
         qf = t_obj.quarterly_financials
         if not qf.empty and 'Total Revenue' in qf.index and 'Net Income' in qf.index:
             rev = qf.loc['Total Revenue'].dropna().values
@@ -80,7 +87,6 @@ def get_smr_acceleration(t_obj):
                 m2 = net[2] / rev[2] if rev[2] != 0 else 0
                 margin_accel = (m0 - m1) + (m1 - m2)
 
-        # 2. 연간 데이터 (세전이익, ROE)
         yf_fin = t_obj.financials
         bs = t_obj.balance_sheet
         if not yf_fin.empty and 'Pretax Income' in yf_fin.index and 'Total Revenue' in yf_fin.index:
@@ -113,8 +119,7 @@ def get_tickers():
             tickers = [line.strip().upper().replace('.', '-') for line in f if line.strip()]
             return list(set(tickers))
     else:
-        print("Warning: 'tickers.txt' not found. Using sample tickers.")
-        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'TNGX'] 
+        return ['AAPL', 'NVDA', 'MSFT', 'TSLA'] 
 
 def update_database():
     tickers = get_tickers()
@@ -122,14 +127,13 @@ def update_database():
     all_results = []
     chunk_size = 30 
     
-    print(f"--- IBD 시스템 시작 (가속도 및 시총 가중치 반영) ({datetime.now()}) ---")
-    print(f"--- 총 {len(tickers)}개 종목 분석 예정 ---")
+    print(f"--- IBD 시스템 시작 ({datetime.now()}) ---")
 
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
-            # 다운로드 시 session 적용
-            data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True, session=session)
+            # yf.download에도 session 전달을 확실히 하기 위해 우회 파라미터 적용
+            data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=False, session=session)
             if data.empty: continue
 
             for ticker in chunk:
@@ -161,26 +165,16 @@ def update_database():
                     industry = industry_master.get(ticker, "Unknown")
                     mcap = 1 
                     
-                    # --- 야후 파이낸스 API 차단 방어 (Retry 로직 & 세션 적용) ---
                     t_obj = yf.Ticker(ticker, session=session)
-                    sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = np.nan, np.nan, np.nan, np.nan, False
-                    info = {}
+                    sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
                     
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            sales_acc, margin_acc, pretax_acc, roe_acc, is_profitable = get_smr_acceleration(t_obj)
-                            info = t_obj.info
-                            break 
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                time.sleep(5) # 차단 방지를 위해 대기 시간 증가
-                            else:
-                                print(f"  > [API 경고] {ticker} 세부 정보 수집 실패 (서버 지연)")
-                    
-                    if info:
-                        mcap = info.get('marketCap', 1)
-                        if info.get('industry'): industry = info.get('industry')
+                    try:
+                        info = t_obj.info
+                        if info:
+                            mcap = info.get('marketCap', 1)
+                            if info.get('industry'): industry = info.get('industry')
+                    except Exception:
+                        pass
 
                     if pd.isna(industry) or industry == "nan": industry = "Unknown"
 
@@ -193,21 +187,20 @@ def update_database():
                         'industry': industry
                     })
                     
-                    time.sleep(0.3) 
+                    time.sleep(0.5) # 루프 간격 더 여유롭게 
 
                 except Exception as inner_e:
                     continue 
 
-            print(f" > {min(i+chunk_size, len(tickers))} / {len(tickers)} 완료 | 최근 산업군 예시: {industry}")
-            time.sleep(1) 
+            print(f" > {min(i+chunk_size, len(tickers))} / {len(tickers)} 완료")
+            time.sleep(2) 
 
         except Exception as e:
             print(f"Chunk Error: {e}")
-            time.sleep(5)
+            time.sleep(10)
 
     if all_results:
         df = pd.DataFrame(all_results)
-        
         df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
         df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
         
@@ -235,31 +228,23 @@ def update_database():
             final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
             
             today_str = datetime.now().strftime('%Y-%m-%d')
-            
-            try:
-                conn.execute("ALTER TABLE rs_history ADD COLUMN industry_rs_score INTEGER;")
-            except sqlite3.OperationalError:
-                pass
+            try: conn.execute("ALTER TABLE rs_history ADD COLUMN industry_rs_score INTEGER;")
+            except: pass
             
             history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
             history_df['date'] = today_str
             history_df.to_sql('rs_history', conn, if_exists='append', index=False)
             
-            print("--- 데이터베이스 최적화 및 정리 시작 ---")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON rs_history (symbol)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON rs_history (date)")
             one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             conn.execute(f"DELETE FROM rs_history WHERE date < '{one_year_ago}'")
             conn.execute("VACUUM")
             
-            print(f"--- DB 저장 및 최적화 완벽 처리 완료 ({today_str}) ---")
-            
         except Exception as db_e:
-            print(f"DB 저장 및 최적화 에러: {db_e}")
+            pass
         finally:
             conn.close()
-    else:
-        print("--- 결과 데이터가 없습니다. ---")
 
 if __name__ == "__main__":
     update_database()
