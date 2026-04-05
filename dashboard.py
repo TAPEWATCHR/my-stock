@@ -8,10 +8,26 @@ import os
 import altair as alt
 import time
 import requests_cache
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# --- [추가] 대시보드용 세션 설정 ---
-yf_session = requests_cache.CachedSession('yfinance_dashboard.cache')
-yf_session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# --- [핵심 수정] 강력한 우회 및 재시도 세션 설정 ---
+yf_session = requests_cache.CachedSession('yfinance_dashboard.cache', expire_after=3600)
+# 429(Too Many Requests) 에러 발생 시 1, 2, 4초 점진적으로 대기하며 최대 5번 재시도
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1.0,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "OPTIONS"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+yf_session.mount("https://", adapter)
+yf_session.mount("http://", adapter)
+yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5'
+})
 
 # --- 즐겨찾기 데이터베이스 함수 ---
 def init_fav_db():
@@ -129,14 +145,14 @@ def calc_growth(series, periods):
 
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            s = yf.Ticker(ticker, session=yf_session)
-            return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, s.info
-        except Exception as e:
-            if attempt < max_retries - 1: time.sleep(2)
-            else: raise YFDataFetchError(f"Rate Limit or Fetch Error: {str(e)}")
+    # Retry 세션이 있으므로 복잡한 자체 루프 대신 간결하게 처리
+    try:
+        s = yf.Ticker(ticker, session=yf_session)
+        # 빠른 실패를 위해 info를 먼저 호출해 봅니다.
+        info = s.info 
+        return s.quarterly_income_stmt, s.income_stmt, s.quarterly_balance_sheet, s.balance_sheet, info
+    except Exception as e:
+        raise YFDataFetchError(f"Rate Limit or Fetch Error: {str(e)}")
 
 # --- 메인 화면 ---
 df = get_data()
@@ -264,7 +280,7 @@ if not df.empty:
             st.markdown(f"**Stock RS** {row['rs_score']} · **SMR** {row['smr_grade']} · **AD** {row['ad_grade']} · **Ind RS** {row['industry_rs_score']} · {row['industry']}")
 
             try:
-                with st.spinner(f"'{ticker}' 상세 데이터를 불러오는 중..."):
+                with st.spinner(f"'{ticker}' 데이터를 야후에서 가져오는 중... (API 보호 중)"):
                     q_inc, a_inc, q_bal, a_bal, info = get_detailed_info(ticker)
                 
                 t_chart, t_fin, t_check, t_biz = st.tabs(["📊 차트", "🧾 재무제표", "🛡️ 체크리스트", "🏢 개요"])
@@ -369,7 +385,6 @@ if not df.empty:
                             st.checkbox(f"**S**: 수급 양호 (AD 등급: {row['ad_grade']})", value=row['ad_grade'] in ['A', 'B'])
                             st.checkbox(f"**L**: 시장 주도주 (RS 80↑: {row['rs_score']})", value=row['rs_score'] >= 80)
                             st.checkbox(f"**I**: 기관 관심 (보유 비중: {inst_own:.1f}%)", value=inst_own > 30)
-                            st.info("💡 **M(Market)**: 현재 지수의 추세를 확인하세요.")
 
                         with c2:
                             st.markdown("### 🔵 트렌드 템플릿 (미너비니)")
@@ -390,6 +405,6 @@ if not df.empty:
                     st.markdown(f'<div class="overview-panel"><h2>{info.get("longName", ticker)}</h2><p>{summary_ko}</p></div>', unsafe_allow_html=True)
 
             except YFDataFetchError:
-                st.error("🚨 야후 파이낸스 요청이 차단되었습니다. 잠시 후 시도해 주세요.")
+                st.error("🚨 스트림릿 서버 IP가 야후에서 완전히 차단되었습니다. 로컬 환경에서 실행하거나 공식 API 도입을 고려해야 합니다.")
         else:
             st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
