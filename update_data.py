@@ -7,34 +7,56 @@ import os
 import requests
 import numpy as np
 
-# --- [설정] FMP API 키 (Secrets에서 가져오거나 직접 입력) ---
+# --- [설정] FMP API 키 ---
 FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
 
 def get_ticker_list_fmp():
-    """FMP 공식 API를 통해 미국 상장 종목 리스트를 안전하게 가져옵니다."""
-    try:
-        print("FMP API를 통해 전 종목 리스트 로드 중...")
-        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
-        response = requests.get(url, timeout=15)
-        res = response.json()
-        
-        if isinstance(res, list):
-            df = pd.DataFrame(res)
-            # 미국 주요 거래소(NASDAQ, NYSE, AMEX) 종목만 필터링
-            df = df[df['exchangeShortName'].isin(['NASDAQ', 'NYSE', 'AMEX', 'NYSE American'])]
-            # 티커 기호 정리
-            df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
-            print(f"✅ 총 {len(df)}개의 미국 종목 리스트를 확보했습니다.")
-            return df[['symbol', 'name']]
-    except Exception as e:
-        print(f"❌ FMP API 리스트 로드 실패: {e}")
+    """두 가지 FMP API 경로를 시도하여 종목 리스트를 확보합니다."""
+    # 시도할 API 경로들 (v3의 서로 다른 리스트 엔드포인트)
+    endpoints = [
+        f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}",
+        f"https://financialmodelingprep.com/api/v3/available-traded/list?apikey={FMP_API_KEY}"
+    ]
+    
+    for url in endpoints:
+        try:
+            print(f"📡 API 시도 중: {url.split('?')[0]}")
+            response = requests.get(url, timeout=15)
+            
+            # 1. 응답 상태가 200(성공)이 아닌 경우 로그 출력
+            if response.status_code != 200:
+                print(f"❌ 서버 응답 오류 (상태 코드: {response.status_code})")
+                print(f"🔎 서버 메시지: {response.text}")
+                continue
+            
+            res = response.json()
+            
+            # 2. 결과가 리스트 형태로 정상 도착한 경우
+            if isinstance(res, list) and len(res) > 0:
+                df = pd.DataFrame(res)
+                # 미국 시장 필터링
+                if 'exchangeShortName' in df.columns:
+                    df = df[df['exchangeShortName'].isin(['NASDAQ', 'NYSE', 'AMEX', 'NYSE American'])]
+                
+                df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
+                print(f"✅ 성공: {len(df)}개의 종목을 가져왔습니다.")
+                return df[['symbol', 'name']] if 'name' in df.columns else df[['symbol']]
+            
+            # 3. 결과는 왔지만 에러 메시지인 경우 (예: {'Error Message': ...})
+            else:
+                print(f"⚠️ API 응답 형식이 올바르지 않습니다: {res}")
+                
+        except Exception as e:
+            print(f"❌ 접속 중 오류 발생: {e}")
+            continue
+            
     return pd.DataFrame()
 
 def get_industry_fmp(ticker):
-    """상위권 종목의 산업군 정보를 가져옵니다 (API 한도 사용)"""
+    """상위권 종목의 산업군 정보 획득"""
     try:
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
-        res = requests.get(url).json()
+        res = requests.get(url, timeout=5).json()
         if isinstance(res, list) and len(res) > 0:
             return res[0].get('industry', 'General Market')
     except: pass
@@ -51,10 +73,10 @@ def calculate_ad_raw(hist):
     return (df['ad_daily'].tail(20).sum() * 0.7) + (df['ad_daily'].head(45).sum() * 0.3)
 
 def update_database():
-    # 1. 종목 리스트 확보
     df_basics = get_ticker_list_fmp()
+    
     if df_basics.empty:
-        print("❌ 리스트를 가져오지 못해 중단합니다.")
+        print("❌ 모든 API 경로에서 리스트를 가져오지 못했습니다. GitHub Secrets 혹은 API 키 상태를 확인하세요.")
         return
 
     tickers = df_basics['symbol'].unique().tolist()
@@ -71,8 +93,9 @@ def update_database():
                     hist = data[ticker].dropna() if len(chunk) > 1 else data.dropna()
                     if len(hist) < 150: continue
                     price = hist['Close'].iloc[-1]
+                    idx_252 = -min(252, len(hist))
                     rs_raw = (price/hist['Close'].iloc[-21]*2) + (price/hist['Close'].iloc[-63]*2) + \
-                             (price/hist['Close'].iloc[-126]) + (price/hist['Close'].iloc[-min(252, len(hist))])
+                             (price/hist['Close'].iloc[-126]) + (price/hist['Close'].iloc[idx_252])
                     all_results.append({
                         'symbol': ticker, 'price': float(price), 'rs_raw': rs_raw,
                         'ad_raw': calculate_ad_raw(hist), 'adv_50': (hist['Close']*hist['Volume']).tail(50).mean()
@@ -81,29 +104,28 @@ def update_database():
         except: continue
         if i % 500 == 0: print(f" > {i} / {len(tickers)} 완료...")
 
-    if not all_results: return
+    if not all_results:
+        print("❌ 분석된 결과가 없습니다.")
+        return
+
     df_prices = pd.DataFrame(all_results)
     df_prices['rs_score'] = (df_prices['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
 
-    # 2. RS 상위 200개 종목에 대해서만 산업군 정보 채우기 (API 한도 최적화)
-    print("--- 2단계: 상위 주도주 산업군 분석 (FMP) ---")
+    # 2단계: 산업군 정보 보강 (상위 200개)
+    print("--- 2단계: 주도주 산업군 분석 ---")
     top_indices = df_prices.sort_values('rs_score', ascending=False).head(200).index
     df_prices['industry'] = 'Unknown'
-    
     for idx in top_indices:
         df_prices.at[idx, 'industry'] = get_industry_fmp(df_prices.at[idx, 'symbol'])
-        time.sleep(0.05) # API 부하 방지
+        time.sleep(0.05)
 
-    # 3. 등급 계산
     df_prices['ad_grade'] = pd.qcut(df_prices['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
     df_prices['smr_grade'] = 'C'
     
-    # 산업군 RS (정보가 있는 경우에만 계산)
     ind_rs = df_prices[df_prices['industry'] != 'Unknown'].groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
     final_df = pd.merge(df_prices, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left').fillna(0)
 
-    # 4. DB 저장
     conn = sqlite3.connect('ibd_system.db')
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
