@@ -41,32 +41,45 @@ def get_data():
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
     try:
-        # FMP API 응답이 에러(API 한도 초과 등)일 경우를 방어
         p_res = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}").json()
         i_res = requests.get(f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}").json()
         h_res = requests.get(f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?serietype=line&apikey={FMP_API_KEY}").json()
         
-        # 'Error Message'가 포함되어 있다면 한도 초과임
         if isinstance(p_res, dict) and "Error" in str(p_res): p_res = []
         if isinstance(i_res, dict) and "Error" in str(i_res): i_res = []
         
         return pd.DataFrame(i_res), p_res[0] if p_res else {}, pd.DataFrame(h_res.get('historical', []))
     except: return pd.DataFrame(), {}, pd.DataFrame()
 
-# --- 페이지 설정 및 가독성 최적화 (밝은 텍스트) ---
+# --- 페이지 설정 및 맞춤형 테마 CSS ---
 st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
 st.markdown("""
 <style>
+    /* 메인 앱 배경 (어둡게) */
     .stApp { background-color: #161C27 !important; }
-    /* 모든 텍스트를 순백색으로 강제 지정 */
-    p, span, div, h1, h2, h3, h4, h5, h6, label, li, .stMarkdown { color: #FFFFFF !important; font-weight: 400; }
+    
+    /* 메인 컨텐츠 영역 텍스트 (밝게) */
+    .block-container p, .block-container span, .block-container h1, .block-container h2, 
+    .block-container h3, .block-container h4, .block-container label, .block-container .stMarkdown { 
+        color: #FFFFFF !important; font-weight: 400; 
+    }
     [data-baseweb="tab"] { color: #FFFFFF !important; font-weight: bold; }
     
-    /* 사이드바 등급 버튼 크기 축소 */
-    .stButton > button { width: 100%; height: 32px; font-size: 11px !important; border-radius: 4px; border: 1px solid #4a5161; }
+    /* 👉 [핵심] 사이드바 영역 텍스트 (어둡게) */
+    [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, 
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { 
+        color: #1E293B !important; font-weight: 600; 
+    }
     
-    /* 데이터 테이블 및 패널 밝기 조정 */
-    .overview-panel { background: #2A3143; padding: 1.5rem; border-radius: 8px; border: 1px solid #5C657A; line-height: 1.7; }
+    /* 사이드바 버튼 디자인 */
+    [data-testid="stSidebar"] .stButton > button { 
+        width: 100%; height: 32px; font-size: 11px !important; border-radius: 4px; 
+        border: 1px solid #CBD5E1 !important; color: #1E293B !important; background-color: #FFFFFF !important;
+    }
+    
+    /* 패널 및 테이블 스타일 */
+    .overview-panel { background: #2A3143; padding: 1.5rem; border-radius: 8px; border: 1px solid #5C657A; line-height: 1.7; color: #FFFFFF !important; }
     [data-testid="stTable"] { background-color: #2A3143; }
     [data-testid="stTable"] th, [data-testid="stTable"] td { color: #FFFFFF !important; border-bottom: 1px solid #4a5161; }
 </style>
@@ -109,12 +122,17 @@ if not df.empty:
                (df['industry_rs_score'] >= ind_rs_m) & \
                (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
                (df['industry'].isin(ind_sel))
-        f_df = df[mask].sort_values('rs_score', ascending=False)
+        
+        # 👉 리스트 출력을 위한 데이터 프레임 복사 및 가공
+        f_df = df[mask].sort_values('rs_score', ascending=False).copy()
+        # 거래대금을 보기 쉽게 밀리언($M) 단위로 변환
+        f_df['ADV($M)'] = (f_df['adv_50'] / 1000000).round(1)
 
     col_l, col_r = st.columns([4, 3])
     with col_l:
         st.subheader(f"Leaders List ({len(f_df)})")
-        sel_row = st.dataframe(f_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry']],
+        # 👉 메인 화면 리스트에 ADV($M) 항목 추가
+        sel_row = st.dataframe(f_df[['symbol', 'price', 'ADV($M)', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry']],
                                hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
 
     with col_r:
