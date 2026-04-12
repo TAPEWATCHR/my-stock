@@ -8,42 +8,33 @@ import requests
 import io
 import numpy as np
 
+# --- [설정] FMP API 키 ---
+FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
+
 def get_official_nasdaq_tickers():
-    """
-    FMP API가 막혔을 때 사용하는 최후의 수단입니다.
-    나스닥 공식 FTP 서버의 실시간 상장 종목 리스트를 가져옵니다.
-    """
+    """나스닥 서버 접속 시도 및 실패 시 백업 리스트 반환"""
     try:
-        print("📡 나스닥 공식 서버(ftp.nasdaqtrader.com)에서 종목 리스트 로드 중...")
-        # 나스닥 상장 종목 리스트 (nasdaqlisted.txt)
+        print("📡 나스닥 공식 서버에서 종목 리스트 로드 중...")
+        # 타임아웃을 20초로 늘려 안정성 확보
         url = "http://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
-        res = requests.get(url).text
+        res = requests.get(url, timeout=20).text
         df_nasdaq = pd.read_csv(io.StringIO(res), sep="|")
         
-        # 기타 거래소 종목 리스트 (otherlisted.txt - NYSE, AMEX 포함)
         url_other = "http://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt"
-        res_other = requests.get(url_other).text
+        res_other = requests.get(url_other, timeout=20).text
         df_other = pd.read_csv(io.StringIO(res_other), sep="|")
         
-        # 데이터 합치기
-        tickers_nasdaq = df_nasdaq['Symbol'].dropna().tolist()
-        tickers_other = df_other['NASDAQ Symbol'].dropna().tolist()
-        
-        all_tickers = list(set(tickers_nasdaq + tickers_other))
-        
-        # 파일 끝의 가비지 데이터(File Creation Time 등) 제거
-        all_tickers = [t for t in all_tickers if t.isalpha() and len(t) <= 5]
-        
-        print(f"✅ 성공: 총 {len(all_tickers)}개의 공식 티커를 확보했습니다.")
-        return all_tickers
+        tickers = list(set(df_nasdaq['Symbol'].dropna().tolist() + df_other['NASDAQ Symbol'].dropna().tolist()))
+        # 유효한 티커만 필터링 (불필요한 설명행 제외)
+        tickers = [t for t in tickers if isinstance(t, str) and t.isalpha() and len(t) <= 5]
+        print(f"✅ 성공: {len(tickers)}개의 티커를 확보했습니다.")
+        return tickers
     except Exception as e:
-        print(f"❌ 나스닥 서버 접속 실패: {e}")
-        # 최악의 경우를 대비한 하드코딩 백업
-        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'GOOGL', 'AMZN', 'META']
+        print(f"⚠️ 나스닥 서버 접속 지연/실패: {e}")
+        # 접속 실패 시 분석할 최소한의 핵심 주도주 리스트 (시스템 중단 방지용)
+        return ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'GOOGL', 'AMZN', 'META', 'AVGO', 'COST', 'NFLX']
 
 def get_industry_fmp(ticker):
-    """상위권 종목 상세 업종 정보 (개별 호출은 아직 무료 키로 가능할 확률이 높음)"""
-    FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
     try:
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
         res = requests.get(url, timeout=5).json()
@@ -63,12 +54,10 @@ def calculate_ad_raw(hist):
     return (df['ad_daily'].tail(20).sum() * 0.7) + (df['ad_daily'].head(45).sum() * 0.3)
 
 def update_database():
-    # 1. 공식 소스에서 티커 가져오기
     tickers = get_official_nasdaq_tickers()
-    
     all_results = []
-    print(f"--- 1단계: {len(tickers)}개 종목 분석 시작 (yfinance) ---")
     
+    print(f"--- 1단계: {len(tickers)}개 종목 분석 시작 ---")
     chunk_size = 50
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
@@ -77,7 +66,7 @@ def update_database():
             for ticker in chunk:
                 try:
                     hist = data[ticker].dropna() if len(chunk) > 1 else data.dropna()
-                    if len(hist) < 200: continue # 충분한 데이터가 있는 종목만
+                    if len(hist) < 200: continue
 
                     price = hist['Close'].iloc[-1]
                     idx_252 = -min(252, len(hist))
@@ -90,18 +79,19 @@ def update_database():
                     })
                 except: continue
         except: continue
-        if i % 500 == 0: print(f" > {i} / {len(tickers)} 분석 완료...")
+        if i % 500 == 0: print(f" > {i} / {len(tickers)} 분석 진행 중...")
 
     if not all_results:
         print("❌ 분석된 데이터가 없습니다.")
         return
 
-    # 2. 결과 가공 및 랭킹
+    # 2. 결과 가공
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-    df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
-
-    # 3. 상위 200개 종목 산업군 보강
+    
+    # 등급 매기기 (Categorical 에러 방지를 위해 결과를 즉시 문자열로 변환)
+    df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
+    
     print("--- 2단계: 주도주 산업군 정보 보강 ---")
     df['industry'] = 'Unknown'
     top_indices = df.sort_values('rs_score', ascending=False).head(200).index
@@ -112,14 +102,18 @@ def update_database():
     # 산업군 RS 점수
     ind_rs = df[df['industry'] != 'Unknown'].groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
-    final_df = pd.merge(df, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left').fillna(0)
+    
+    # 병합 후 결측치 처리 (Categorical 타입이 아니므로 fillna(0) 가능)
+    final_df = pd.merge(df, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left')
+    final_df['industry_rs_score'] = final_df['industry_rs_score'].fillna(0).astype(int)
     final_df['smr_grade'] = 'C'
 
-    # 4. DB 저장
+    # 3. DB 저장
     conn = sqlite3.connect('ibd_system.db')
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
     
+    # 히스토리 저장
     history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     history_df.to_sql('rs_history', conn, if_exists='append', index=False)
