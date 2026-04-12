@@ -2,17 +2,15 @@ name: Update Stock Data
 
 on:
   schedule:
-    - cron: '0 13 * * *' # 매일 한국 시간 밤 10시 실행 (미국 장 마감 후)
-  workflow_dispatch:      # 수동 실행 버튼 활성화
+    - cron: '0 13 * * *' # 매일 한국 시간 밤 10시 실행
+  workflow_dispatch:      # 수동 실행 버튼
 
-# 403 Forbidden 에러를 방지하기 위한 쓰기 권한 부여
 permissions:
   contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 6,000개 종목 분석을 위해 충분한 시간(6시간) 부여
     timeout-minutes: 360 
 
     steps:
@@ -20,21 +18,21 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0 
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # === [수정된 부분] requirements.txt를 사용해 한 번에 설치합니다 ===
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      # ==========================================================
+          # 필요한 라이브러리를 직접 명시하거나 requirements.txt를 사용합니다.
+          pip install yfinance pandas requests numpy requests-cache
 
       - name: Run Update Script
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }} # 보안을 위해 Secret 사용 권장
         run: python update_data.py
 
       - name: Commit and Push
@@ -42,18 +40,14 @@ jobs:
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           
-          # 1. 작업물(DB)을 잠시 보관하여 충돌 방지
-          git add ibd_system.db
-          git stash
-          
-          # 2. 서버의 최신 변경사항(tickers.txt 등) 반영
-          git pull origin main --rebase
-          
-          # 3. 보관했던 최신 DB 파일을 다시 꺼냄
-          git stash pop || echo "No changes to pop"
-          
-          # 4. 최종 결과물 스테이징
-          git add ibd_system.db
-          
-          # 5. 변경사항이 있을 때만 푸시 (무한 루프 방지 [skip ci] 포함)
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update stock data [skip ci]" && git push)
+          # DB 파일이 생성되었는지 확인 후 작업
+          if [ -f ibd_system.db ]; then
+            git add ibd_system.db
+            git stash
+            git pull origin main --rebase
+            git stash pop || echo "No changes to pop"
+            git add ibd_system.db
+            git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update stock data [skip ci]" && git push)
+          else
+            echo "Database file not found. Skipping commit."
+          fi
