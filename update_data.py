@@ -5,35 +5,31 @@ import time
 from datetime import datetime
 import os
 import requests
+import io
 import numpy as np
 
-# --- [중요] API 키 설정 ---
-# GitHub Actions에서는 Secrets에서 가져오고, 로컬 테스트 시에는 직접 입력한 키를 사용합니다.
-FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
-
-def get_all_stock_basics_fmp():
-    """FMP 스크리너로 전 종목의 기초 데이터를 가져옵니다."""
+def get_ticker_and_industry_list():
+    """
+    FMP API 대신 무료로 공개된 나스닥 스크리너 CSV를 활용하여 
+    전 종목 리스트와 산업군 정보를 가져옵니다.
+    """
+    url = "https://raw.githubusercontent.com/yumoxu/stock-market-analysis/master/data/nasdaq_screener.csv"
     try:
-        print(f"FMP에서 전 종목 기초 데이터를 로드 중... (Key: {FMP_API_KEY[:5]}***)")
-        url = f"https://financialmodelingprep.com/api/v3/stock-screener?apikey={FMP_API_KEY}"
-        response = requests.get(url)
-        res = response.json()
+        print("무료 데이터 소스에서 전 종목 리스트 및 산업군 로드 중...")
+        response = requests.get(url).content
+        df = pd.read_csv(io.StringIO(response.decode('utf-8')))
         
-        # 정상적으로 리스트(종목들)를 받았을 경우
-        if isinstance(res, list):
-            if len(res) == 0:
-                print("FMP에서 빈 리스트를 반환했습니다. 검색 조건이나 키를 확인하세요.")
-                return pd.DataFrame()
-            df = pd.DataFrame(res)
-            return df[['symbol', 'industry', 'marketCap', 'companyName']]
-        
-        # 리스트가 아닌 에러 메시지(dict)를 받았을 경우
-        else:
-            print(f"🚨 FMP API 응답 에러 발생: {res}")
-            return pd.DataFrame()
-            
+        # 필요한 컬럼만 추출 및 정리
+        if 'Symbol' in df.columns and 'Industry' in df.columns:
+            df = df[['Symbol', 'Industry', 'Name']].rename(
+                columns={'Symbol': 'symbol', 'Industry': 'industry', 'Name': 'companyName'}
+            )
+            # 티커 기호 정리 (yfinance 호환용: .을 -로 변경)
+            df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
+            df['industry'] = df['industry'].fillna('Unknown')
+            return df
     except Exception as e:
-        print(f"🚨 FMP 데이터 로드 중 시스템 오류: {e}")
+        print(f"🚨 데이터 로드 실패: {e}")
     return pd.DataFrame()
 
 def calculate_ad_raw(hist):
@@ -47,22 +43,25 @@ def calculate_ad_raw(hist):
     return (df['ad_daily'].tail(20).sum() * 0.7) + (df['ad_daily'].head(45).sum() * 0.3)
 
 def update_database():
-    df_basics = get_all_stock_basics_fmp()
+    # 1. 무료 소스에서 전 종목 리스트 가져오기
+    df_basics = get_ticker_and_industry_list()
     
     if df_basics.empty:
-        print("❌ 기본 데이터를 가져오지 못해 업데이트를 중단합니다. 위 로그의 API 응답 에러를 확인하세요.")
+        print("❌ 종목 리스트를 가져오지 못해 중단합니다.")
         return
 
     tickers = df_basics['symbol'].unique().tolist()
     all_results = []
     
-    print(f"--- 1단계: {len(tickers)}개 종목 분석 시작 ---")
+    print(f"--- 1단계: {len(tickers)}개 종목 주가 분석 시작 (yfinance 활용) ---")
     
+    # 50개씩 끊어서 병렬 다운로드 (GitHub Actions IP 활용)
     chunk_size = 50
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
             data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True)
+            
             for ticker in chunk:
                 try:
                     hist = data[ticker].dropna() if len(chunk) > 1 else data.dropna()
@@ -70,6 +69,8 @@ def update_database():
 
                     price = hist['Close'].iloc[-1]
                     idx_252 = -min(252, len(hist))
+                    
+                    # RS Raw 계산
                     rs_raw = (price/hist['Close'].iloc[-21]*2) + (price/hist['Close'].iloc[-63]*2) + \
                              (price/hist['Close'].iloc[-126]) + (price/hist['Close'].iloc[idx_252])
                     
@@ -84,33 +85,38 @@ def update_database():
         except: continue
         
         if i % 500 == 0:
-            print(f" > {i} / {len(tickers)} 진행 중...")
+            print(f" > {i} / {len(tickers)} 종목 처리 완료...")
 
     if not all_results:
-        print("❌ 분석된 종목 결과가 없습니다.")
+        print("❌ 분석된 결과가 없습니다.")
         return
 
+    # 2. 결과 결합 및 랭킹 산정
     df_prices = pd.DataFrame(all_results)
     final_df = pd.merge(df_prices, df_basics, on='symbol', how='left')
     
     final_df['rs_score'] = (final_df['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
     final_df['ad_grade'] = pd.qcut(final_df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A'])
     
+    # 산업군 RS 점수
     ind_rs = final_df.groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
     final_df = pd.merge(final_df, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left')
-    final_df['smr_grade'] = 'C'
+    
+    final_df['smr_grade'] = 'C' # 기본값
 
+    # 3. DB 저장
     conn = sqlite3.connect('ibd_system.db')
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
     
+    # 히스토리 저장
     history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     history_df.to_sql('rs_history', conn, if_exists='append', index=False)
     
     conn.close()
-    print(f"--- ✅ 업데이트 완료: 총 {len(final_df)}개 종목 저장됨 ---")
+    print(f"--- ✅ 전 종목 업데이트 완료: 총 {len(final_df)}개 종목 저장됨 ---")
 
 if __name__ == "__main__":
     update_database()
