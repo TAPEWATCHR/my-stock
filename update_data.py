@@ -10,26 +10,48 @@ import numpy as np
 
 def get_ticker_and_industry_list():
     """
-    FMP API 대신 무료로 공개된 나스닥 스크리너 CSV를 활용하여 
-    전 종목 리스트와 산업군 정보를 가져옵니다.
+    여러 무료 소스를 시도하여 미국 주식 리스트와 산업군 정보를 가져옵니다.
     """
-    url = "https://raw.githubusercontent.com/yumoxu/stock-market-analysis/master/data/nasdaq_screener.csv"
-    try:
-        print("무료 데이터 소스에서 전 종목 리스트 및 산업군 로드 중...")
-        response = requests.get(url).content
-        df = pd.read_csv(io.StringIO(response.decode('utf-8')))
-        
-        # 필요한 컬럼만 추출 및 정리
-        if 'Symbol' in df.columns and 'Industry' in df.columns:
-            df = df[['Symbol', 'Industry', 'Name']].rename(
-                columns={'Symbol': 'symbol', 'Industry': 'industry', 'Name': 'companyName'}
-            )
-            # 티커 기호 정리 (yfinance 호환용: .을 -로 변경)
-            df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
-            df['industry'] = df['industry'].fillna('Unknown')
-            return df
-    except Exception as e:
-        print(f"🚨 데이터 로드 실패: {e}")
+    # 시도해볼 데이터 소스들 (유지보수가 잘 되는 경로들)
+    sources = [
+        {
+            "url": "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_full_tickers.csv",
+            "sym_col": "symbol", "ind_col": "industry", "name_col": "name"
+        },
+        {
+            "url": "https://raw.githubusercontent.com/yumoxu/stock-market-analysis/master/data/nasdaq_screener.csv",
+            "sym_col": "Symbol", "ind_col": "Industry", "name_col": "Name"
+        }
+    ]
+
+    for source in sources:
+        try:
+            print(f"데이터 소스 시도 중: {source['url']}")
+            response = requests.get(source['url'], timeout=15)
+            
+            if response.status_code == 200:
+                df = pd.read_csv(io.StringIO(response.text))
+                # 컬럼명 표준화
+                df = df.rename(columns={
+                    source['sym_col']: 'symbol',
+                    source['ind_col']: 'industry',
+                    source['name_col']: 'companyName'
+                })
+                
+                # 티커 기호 정리 (.을 -로 변경)
+                df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
+                df['industry'] = df['industry'].fillna('Unknown')
+                
+                # 필수 컬럼만 남기기
+                df = df[['symbol', 'industry', 'companyName']]
+                print(f"✅ 성공적으로 {len(df)}개의 종목 리스트를 로드했습니다.")
+                return df
+            else:
+                print(f"⚠️ 응답 실패 (상태 코드: {response.status_code})")
+        except Exception as e:
+            print(f"❌ 해당 소스 로드 중 에러: {e}")
+            continue
+            
     return pd.DataFrame()
 
 def calculate_ad_raw(hist):
@@ -43,28 +65,34 @@ def calculate_ad_raw(hist):
     return (df['ad_daily'].tail(20).sum() * 0.7) + (df['ad_daily'].head(45).sum() * 0.3)
 
 def update_database():
-    # 1. 무료 소스에서 전 종목 리스트 가져오기
     df_basics = get_ticker_and_industry_list()
     
     if df_basics.empty:
-        print("❌ 종목 리스트를 가져오지 못해 중단합니다.")
+        print("❌ 모든 데이터 소스에서 리스트를 가져오는 데 실패했습니다. 중단합니다.")
         return
 
     tickers = df_basics['symbol'].unique().tolist()
     all_results = []
     
-    print(f"--- 1단계: {len(tickers)}개 종목 주가 분석 시작 (yfinance 활용) ---")
+    print(f"--- 1단계: {len(tickers)}개 종목 주가 분석 시작 ---")
     
-    # 50개씩 끊어서 병렬 다운로드 (GitHub Actions IP 활용)
+    # 작업량을 고려하여 50개씩 청크 처리
     chunk_size = 50
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
+            # GitHub Actions 환경의 IP를 활용해 다운로드
             data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker', threads=True)
             
             for ticker in chunk:
                 try:
-                    hist = data[ticker].dropna() if len(chunk) > 1 else data.dropna()
+                    # 데이터 구조 처리
+                    if len(chunk) > 1:
+                        if ticker not in data.columns.get_level_values(0): continue
+                        hist = data[ticker].dropna()
+                    else:
+                        hist = data.dropna()
+
                     if len(hist) < 150: continue
 
                     price = hist['Close'].iloc[-1]
@@ -82,16 +110,17 @@ def update_database():
                         'adv_50': (hist['Close']*hist['Volume']).tail(50).mean()
                     })
                 except: continue
-        except: continue
+        except Exception as e:
+            print(f"Chunk 처리 중 오류: {e}")
         
         if i % 500 == 0:
-            print(f" > {i} / {len(tickers)} 종목 처리 완료...")
+            print(f" > {i} / {len(tickers)} 종목 완료...")
 
     if not all_results:
-        print("❌ 분석된 결과가 없습니다.")
+        print("❌ 분석 결과가 없습니다.")
         return
 
-    # 2. 결과 결합 및 랭킹 산정
+    # 결과 결합 및 랭킹
     df_prices = pd.DataFrame(all_results)
     final_df = pd.merge(df_prices, df_basics, on='symbol', how='left')
     
@@ -103,20 +132,20 @@ def update_database():
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
     final_df = pd.merge(final_df, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left')
     
-    final_df['smr_grade'] = 'C' # 기본값
+    final_df['smr_grade'] = 'C'
 
-    # 3. DB 저장
+    # DB 저장
     conn = sqlite3.connect('ibd_system.db')
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
     
-    # 히스토리 저장
+    # 히스토리 기록
     history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     history_df.to_sql('rs_history', conn, if_exists='append', index=False)
     
     conn.close()
-    print(f"--- ✅ 전 종목 업데이트 완료: 총 {len(final_df)}개 종목 저장됨 ---")
+    print(f"--- ✅ 완료: 총 {len(final_df)}개 종목이 DB에 저장되었습니다. ---")
 
 if __name__ == "__main__":
     update_database()
