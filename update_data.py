@@ -8,17 +8,19 @@ import requests
 import io
 import numpy as np
 
-# --- [설정] ---
+# --- [설정] FMP API 키 ---
+FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
+
 def get_full_market_data():
-    """SEC 티커와 산업군 마스터를 결합"""
     try:
+        # 산업군 소스 (rreichel3 데이터셋이 더 방대함)
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_full_tickers.csv"
         id_df = pd.read_csv(url)
         id_df.columns = [c.lower() for c in id_df.columns]
         id_df = id_df[['symbol', 'industry']].rename(columns={'symbol': 'symbol'})
         id_df['symbol'] = id_df['symbol'].str.upper().str.replace('.', '-', regex=False)
 
-        headers = {'User-Agent': 'My-Stock-App contact@my-stock-app.com'}
+        headers = {'User-Agent': 'My-Stock-App'}
         sec_res = requests.get("https://www.sec.gov/files/company_tickers.json", headers=headers).json()
         sec_tickers = [v['ticker'].upper().replace('.', '-') for v in sec_res.values()]
         
@@ -37,23 +39,15 @@ def calculate_ad_raw(hist):
     return (df['Volume'] / df['vol_50ma'] * df['daily_return'] * 100).sum()
 
 def get_smr_raw_yf(t_obj):
-    """yfinance 객체에서 SMR 계산용 로우 데이터 추출"""
     try:
         qf = t_obj.quarterly_financials
-        if qf.empty or 'Total Revenue' not in qf.index or 'Net Income' not in qf.index:
-            return 0, False
-        
+        if qf.empty or 'Total Revenue' not in qf.index: return 0, False
         rev = qf.loc['Total Revenue'].dropna().values
-        net = qf.loc['Net Income'].dropna().values
-        
+        net = qf.loc['Net Income'].dropna().values if 'Net Income' in qf.index else [0]
         if len(rev) < 3: return 0, False
-        
-        # 매출 가속도 계산
         g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
         g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
-        s_acc = g0 - g1
-        is_prof = net[0] > 0
-        return s_acc, is_prof
+        return g0 - g1, net[0] > 0
     except: return 0, False
 
 def update_database():
@@ -62,10 +56,8 @@ def update_database():
     
     tickers = base_df['symbol'].tolist()
     all_results = []
+    print(f"--- 분석 시작: {len(tickers)}개 종목 ---")
     
-    print(f"--- 분석 시작: 총 {len(tickers)}개 종목 ---")
-    
-    # 1. 가격 데이터 대량 다운로드 (RS용)
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i+chunk_size]
@@ -76,12 +68,11 @@ def update_database():
                 hist = data[ticker].dropna() if len(chunk) > 1 else data.dropna()
                 if len(hist) < 200: continue
                 
-                # RS 계산
+                # RS 산식 적용
                 price = hist['Close'].iloc[-1]
                 rs_raw = (price/hist['Close'].iloc[-21]*2) + (price/hist['Close'].iloc[-63]*2) + \
                          (price/hist['Close'].iloc[-126]) + (price/hist['Close'].iloc[-min(252, len(hist))])
                 
-                # SMR 계산 (yfinance 개별 호출)
                 t_obj = yf.Ticker(ticker)
                 s_acc, is_prof = get_smr_raw_yf(t_obj)
                 
@@ -91,35 +82,31 @@ def update_database():
                     'smr_acc': s_acc, 'is_prof': is_prof
                 })
             except: continue
-        
-        print(f" > {i+len(chunk)} / {len(tickers)} 분석 중...")
-        time.sleep(0.1) # 서버 부하 방지
+        print(f" > {i+len(chunk)} 완료...")
 
     if not all_results: return
     df = pd.merge(pd.DataFrame(all_results), base_df, on='symbol', how='left')
 
-    # --- 랭킹 산정 (전체 종목 기준) ---
+    # 등급 매기기
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 98 + 1).astype(int)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
-    
-    # SMR 등급: 가속도 점수 + 수익성 가중치
     df['smr_rank_val'] = df['smr_acc'].rank(pct=True) + (df['is_prof'].astype(int) * 0.5)
     df['smr_grade'] = pd.qcut(df['smr_rank_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
     
-    # 산업군 RS
+    # 산업군 RS 산식 적용
     ind_rs = df.groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
     final_df = pd.merge(df, ind_rs[['industry', 'industry_rs_score']], on='industry', how='left').fillna(0)
 
-    # 저장
     conn = sqlite3.connect('ibd_system.db')
+    # industry와 adv_50 컬럼 누락 방지
     final_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']].to_sql('repo_results', conn, if_exists='replace', index=False)
     
     history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     history_df.to_sql('rs_history', conn, if_exists='append', index=False)
     conn.close()
-    print("--- ✅ 전 종목 RS/SMR/AD 업데이트 완료 ---")
+    print("--- ✅ 업데이트 완료 ---")
 
 if __name__ == "__main__":
     update_database()
