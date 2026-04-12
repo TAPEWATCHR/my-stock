@@ -2,8 +2,8 @@ name: Update Stock Data
 
 on:
   schedule:
-    - cron: '0 13 * * *' # 매일 한국 시간 밤 10시 실행 (미국 장 마감 후)
-  workflow_dispatch:      # 언제든 수동으로 실행할 수 있는 버튼 활성화
+    - cron: '0 13 * * *' # 매일 한국 시간 밤 10시 실행
+  workflow_dispatch:      # 수동 실행 버튼 활성화
 
 permissions:
   contents: write
@@ -11,53 +11,45 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 만 개 이상의 종목 분석을 고려하여 넉넉한 시간 부여
     timeout-minutes: 360 
+    
+    # --- [추가된 부분] Node.js 24 엔진을 강제로 사용하도록 설정하여 경고 해결 ---
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      # 1. 소스 코드 체크아웃 (v3에서 v4로 업데이트)
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 
 
-      # 2. 파이썬 환경 설정 (v4에서 v5로 업데이트)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3. 필요한 라이브러리 설치
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas requests numpy requests-cache
 
-      # 4. 데이터 업데이트 스크립트 실행
-      # GitHub Secrets에 등록된 FMP_API_KEY를 안전하게 가져와 사용합니다.
       - name: Run Update Script
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: python update_data.py
 
-      # 5. 변경된 데이터베이스(ibd_system.db)를 레포지토리에 저장
       - name: Commit and Push
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           
-          # 데이터베이스 파일이 정상적으로 생성/수정되었는지 확인
           if [ -f ibd_system.db ]; then
             git add ibd_system.db
-            
-            # 충돌 방지를 위한 스마트한 커밋/푸시 로직
             git stash
             git pull origin main --rebase
             git stash pop || echo "No changes to pop"
-            
             git add ibd_system.db
-            # 변경사항이 있을 때만 커밋하여 무한 루프 방지
             git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update stock data [skip ci]" && git push)
           else
-            echo "Database file (ibd_system.db) not found. Skipping commit."
+            echo "Database file not found. Skipping commit."
           fi
