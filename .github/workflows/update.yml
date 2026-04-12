@@ -12,19 +12,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360 
-    
-    # --- [추가된 부분] Node.js 24 엔진을 강제로 사용하도록 설정하여 경고 해결 ---
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      # 1. 최신 Node.js 24를 지원하는 v5 버전 사용
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0 
 
+      # 2. 최신 Node.js 24를 지원하는 v6 버전 사용
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
