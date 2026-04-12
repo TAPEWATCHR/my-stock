@@ -11,49 +11,43 @@ import numpy as np
 FMP_API_KEY = os.environ.get('FMP_API_KEY', "1kJBflGjsp5fCgbancejhI5bN5iavEJF")
 
 def get_ticker_list_fmp():
-    """두 가지 FMP API 경로를 시도하여 종목 리스트를 확보합니다."""
-    # 시도할 API 경로들 (v3의 서로 다른 리스트 엔드포인트)
-    endpoints = [
-        f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}",
-        f"https://financialmodelingprep.com/api/v3/available-traded/list?apikey={FMP_API_KEY}"
-    ]
+    """
+    403 에러를 피하기 위해 Legacy가 아닌 
+    최신 'Exchange Symbol List' 엔드포인트를 사용합니다.
+    """
+    exchanges = ['NASDAQ', 'NYSE', 'AMEX']
+    all_tickers = []
     
-    for url in endpoints:
+    print(f"📡 최신 Exchange API를 통해 종목 리스트 로드 시작...")
+    
+    for ex in exchanges:
         try:
-            print(f"📡 API 시도 중: {url.split('?')[0]}")
+            # v3/symbol/거래소 경로가 현재 신규 유저에게 권장되는 방식입니다.
+            url = f"https://financialmodelingprep.com/api/v3/symbol/{ex}?apikey={FMP_API_KEY}"
             response = requests.get(url, timeout=15)
             
-            # 1. 응답 상태가 200(성공)이 아닌 경우 로그 출력
-            if response.status_code != 200:
-                print(f"❌ 서버 응답 오류 (상태 코드: {response.status_code})")
-                print(f"🔎 서버 메시지: {response.text}")
-                continue
-            
-            res = response.json()
-            
-            # 2. 결과가 리스트 형태로 정상 도착한 경우
-            if isinstance(res, list) and len(res) > 0:
-                df = pd.DataFrame(res)
-                # 미국 시장 필터링
-                if 'exchangeShortName' in df.columns:
-                    df = df[df['exchangeShortName'].isin(['NASDAQ', 'NYSE', 'AMEX', 'NYSE American'])]
-                
-                df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
-                print(f"✅ 성공: {len(df)}개의 종목을 가져왔습니다.")
-                return df[['symbol', 'name']] if 'name' in df.columns else df[['symbol']]
-            
-            # 3. 결과는 왔지만 에러 메시지인 경우 (예: {'Error Message': ...})
+            if response.status_code == 200:
+                res = response.json()
+                if isinstance(res, list) and len(res) > 0:
+                    for item in res:
+                        all_tickers.append({
+                            'symbol': item.get('symbol', '').strip().upper().replace('.', '-'),
+                            'name': item.get('name', 'Unknown'),
+                            'industry': item.get('type', 'Unknown') # 일부 API는 여기서 업종을 주기도 함
+                        })
+                    print(f"✅ {ex} 거래소 로드 완료: {len(res)}개")
+                else:
+                    print(f"⚠️ {ex} 응답 데이터가 비어있습니다.")
             else:
-                print(f"⚠️ API 응답 형식이 올바르지 않습니다: {res}")
-                
+                print(f"❌ {ex} 서버 응답 오류: {response.status_code}")
+                print(f"🔎 메시지: {response.text}")
         except Exception as e:
-            print(f"❌ 접속 중 오류 발생: {e}")
-            continue
+            print(f"❌ {ex} 접속 오류: {e}")
             
-    return pd.DataFrame()
+    return pd.DataFrame(all_tickers).drop_duplicates('symbol')
 
 def get_industry_fmp(ticker):
-    """상위권 종목의 산업군 정보 획득"""
+    """상위권 종목 상세 업종 정보 획득"""
     try:
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
         res = requests.get(url, timeout=5).json()
@@ -76,13 +70,13 @@ def update_database():
     df_basics = get_ticker_list_fmp()
     
     if df_basics.empty:
-        print("❌ 모든 API 경로에서 리스트를 가져오지 못했습니다. GitHub Secrets 혹은 API 키 상태를 확인하세요.")
+        print("❌ 종목 리스트를 확보하지 못했습니다. FMP API 키의 유효성을 확인하세요.")
         return
 
     tickers = df_basics['symbol'].unique().tolist()
     all_results = []
     
-    print(f"--- 1단계: {len(tickers)}개 종목 주가 분석 시작 ---")
+    print(f"--- 1단계: {len(tickers)}개 종목 가격 분석 시작 (yfinance) ---")
     chunk_size = 50
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
@@ -102,17 +96,14 @@ def update_database():
                     })
                 except: continue
         except: continue
-        if i % 500 == 0: print(f" > {i} / {len(tickers)} 완료...")
+        if i % 500 == 0: print(f" > {i} / {len(tickers)} 분석 중...")
 
-    if not all_results:
-        print("❌ 분석된 결과가 없습니다.")
-        return
-
+    if not all_results: return
     df_prices = pd.DataFrame(all_results)
     df_prices['rs_score'] = (df_prices['rs_raw'].rank(pct=True) * 98 + 1).fillna(0).astype(int)
 
-    # 2단계: 산업군 정보 보강 (상위 200개)
-    print("--- 2단계: 주도주 산업군 분석 ---")
+    # 2단계: 산업군 분석 (상위 200개 종목에 집중)
+    print("--- 2단계: 주도주 상세 산업군 로드 ---")
     top_indices = df_prices.sort_values('rs_score', ascending=False).head(200).index
     df_prices['industry'] = 'Unknown'
     for idx in top_indices:
@@ -134,7 +125,7 @@ def update_database():
     history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     history_df.to_sql('rs_history', conn, if_exists='append', index=False)
     conn.close()
-    print(f"--- ✅ 완료: {len(final_df)}개 종목 저장됨 ---")
+    print(f"--- ✅ 업데이트 완료! ---")
 
 if __name__ == "__main__":
     update_database()
