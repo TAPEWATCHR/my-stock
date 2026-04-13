@@ -3,18 +3,17 @@ import yfinance as yf
 import pandas as pd
 import sqlite3
 import time
+import numpy as np
 from datetime import datetime, timedelta
 import requests
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
-    # 1. 산업군 마스터 테이블
     conn.execute("""
         CREATE TABLE IF NOT EXISTS company_profiles (
             symbol TEXT PRIMARY KEY, industry TEXT, description TEXT
         )
     """)
-    # 2. [신규] SMR 재무 데이터 캐싱 테이블 (분기에 한 번만 업데이트하기 위함)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS smr_cache (
             symbol TEXT PRIMARY KEY, 
@@ -26,7 +25,7 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    headers = {'User-Agent': 'MarketLeadersTerminal contact_my_email@gmail.com'} 
+    headers = {'User-Agent': 'Mozilla/5.0'} 
     try:
         url = "https://www.sec.gov/files/company_tickers_exchange.json"
         res = requests.get(url, headers=headers, timeout=10)
@@ -55,116 +54,126 @@ def update_database():
     
     print(f"🚀 1단계: {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
 
-    chunk_size = 50
+    # yfinance 다운로드 방식 개선 (개별 데이터 보존)
+    chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
+            # group_by='ticker'를 유지하되, 통째로 dropna() 하지 않음
             price_data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker')
         except:
-            time.sleep(5); continue
+            time.sleep(2); continue
 
         for ticker in chunk:
             try:
-                hist = price_data[ticker].dropna() if len(chunk) > 1 else price_data.dropna()
-                if len(hist) < 150: continue
+                # 단일 종목일 때와 다중 종목일 때의 컬럼 구조 대응
+                if len(chunk) == 1:
+                    hist = price_data.copy()
+                else:
+                    if ticker not in price_data.columns.levels[0]: continue
+                    hist = price_data[ticker].copy()
+                
+                hist = hist.dropna(subset=['Close', 'Volume'])
+                
+                # 최소 데이터 기준 완화 (신규 상장주 포함을 위해 65일로 축소)
+                if len(hist) < 65: continue
 
                 p = hist['Close']
                 v = hist['Volume']
                 
-                # RS & 거래대금 계산
-                rs_raw = (p.iloc[-1]/p.iloc[-21]*2) + (p.iloc[-1]/p.iloc[-63]*2)
-                adv_50 = (p * v).tail(50).mean()
+                # RS 계산 (최근 1분기 및 1달 가중치)
+                current_p = float(p.iloc[-1])
+                rs_raw = (current_p / p.iloc[-21] * 2) + (current_p / p.iloc[-63] * 2) if len(hist) >= 63 else 0
+                
+                # 거래대금(ADV) 계산 (최근 50일 평균 거래량 * 현재가, 달러 단위)
+                adv_50 = float((v.tail(50).mean() * current_p))
 
-                # 👉 [복구] AD (Accumulation/Distribution) 수급 로직 즉시 계산
-                ad_raw = (v / v.rolling(50).mean() * p.pct_change() * 100).tail(65).sum()
+                # AD 수급 로직 개선 (ZeroDivisionError 방지 및 추세 반영)
+                v_mean = v.rolling(50).mean().bfill()
+                pct_change = p.pct_change().fillna(0) * 100
+                ad_raw = np.where(v_mean > 0, (v / v_mean) * pct_change, 0)
+                ad_raw_sum = pd.Series(ad_raw).tail(65).sum()
 
-                # 산업군 업데이트 (Unknown인 경우만)
+                # 산업군 업데이트 (알 수 없는 경우)
                 industry = base_df.loc[base_df['symbol'] == ticker, 'industry'].values[0]
-                if industry == 'Unknown':
-                    try:
-                        info = yf.Ticker(ticker).info
-                        industry = info.get('industry', 'Unknown')
-                        desc = info.get('longBusinessSummary', '')
-                        if industry != 'Unknown':
-                            conn.execute("INSERT OR REPLACE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)", (ticker, industry, desc))
-                            conn.commit()
-                    except: pass
 
                 all_results.append({
-                    'symbol': ticker, 'price': float(p.iloc[-1]), 'rs_raw': rs_raw,
-                    'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw
+                    'symbol': ticker, 'price': current_p, 'rs_raw': rs_raw,
+                    'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw_sum
                 })
-            except: continue
+            except Exception as e:
+                continue
         
         if i % 500 == 0 and i > 0: print(f" > {i}개 완료...")
         time.sleep(0.5)
 
-    if not all_results: return
+    if not all_results: 
+        print("🚨 수집된 데이터가 없습니다.")
+        return
     
-    # 1차 데이터프레임 조립 및 기본 랭킹
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
     
-    # 👉 [복구] AD 등급 A~E 산정
+    # AD 등급 산정 (중복값 에러 방지)
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
     print("🚀 2단계: SMR(재무) 등급 스마트 업데이트 진행 중...")
     
-    # DB에서 기존 SMR 캐시 불러오기
     smr_db = pd.read_sql("SELECT * FROM smr_cache", conn)
     smr_db['last_updated'] = pd.to_datetime(smr_db['last_updated'])
     df = pd.merge(df, smr_db, on='symbol', how='left')
 
-    # 👉 [핵심 로직] RS 70점 이상인 주도주 중, 재무 데이터가 없거나 90일이 지난 종목만 선별
     ninety_days_ago = datetime.now() - timedelta(days=90)
+    # RS 70 이상 주도주이거나 기존에 데이터가 없는 종목 중 90일 지난 종목만 업데이트
     needs_smr_update = df[
         (df['rs_score'] >= 70) & 
         ((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))
     ]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 신규 수집 중 (야후 서버 우회 전략)...")
+        print(f" > {len(needs_smr_update)}개 종목 재무 데이터 업데이트 중...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                qf = yf.Ticker(ticker).quarterly_financials
-                if not qf.empty and 'Total Revenue' in qf.index:
-                    rev = qf.loc['Total Revenue'].dropna().values
-                    net = qf.loc['Net Income'].dropna().values if 'Net Income' in qf.index else [0]
+                tk = yf.Ticker(ticker)
+                qf = tk.quarterly_financials
+                
+                # 다양한 야후 파이낸스 키값 대응
+                rev_key = 'Total Revenue' if 'Total Revenue' in qf.index else 'Operating Revenue' if 'Operating Revenue' in qf.index else None
+                net_key = 'Net Income' if 'Net Income' in qf.index else None
+
+                if rev_key and not qf.empty:
+                    rev = qf.loc[rev_key].dropna().values
+                    net = qf.loc[net_key].dropna().values if net_key else [0]
+                    
                     if len(rev) >= 3:
                         g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
                         g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
                         smr_acc = g0 - g1
-                        is_prof = 1 if net[0] > 0 else 0
+                        is_prof = 1 if len(net) > 0 and net[0] > 0 else 0
                         
-                        # 계산된 값을 DB에 저장
                         today_str = datetime.now().strftime('%Y-%m-%d')
                         conn.execute("INSERT OR REPLACE INTO smr_cache (symbol, smr_acc, is_prof, last_updated) VALUES (?, ?, ?, ?)", 
                                      (ticker, smr_acc, is_prof, today_str))
                         conn.commit()
-                        
-                        # 현재 데이터프레임에도 반영
                         df.loc[df['symbol'] == ticker, ['smr_acc', 'is_prof']] = [smr_acc, is_prof]
             except: pass
-            if idx % 50 == 0 and idx > 0: time.sleep(2) # 50개마다 휴식
+            if idx % 50 == 0 and idx > 0: time.sleep(1) 
             
-    # SMR 등급 산정 (전체 종목 대상 상대평가)
     df['smr_acc'] = df['smr_acc'].fillna(0)
     df['is_prof'] = df['is_prof'].fillna(0)
     df['smr_val'] = df['smr_acc'].rank(pct=True) + (df['is_prof'] * 0.5)
     df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
-    # 산업군 RS 계산
     ind_rs = df.groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
     ind_rs['industry_rs_score'] = (ind_rs['ind_rs_raw'].rank(pct=True) * 99).astype(int)
     final_df = pd.merge(df, ind_rs[['industry', 'industry_rs_score']], on='industry')
 
-    # 최종 DB 저장
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
     
     conn.close()
-    print(f"✅ 업데이트 완벽 종료! 대시보드를 확인하세요.")
+    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 종목 저장됨.")
 
 if __name__ == "__main__":
     update_database()
