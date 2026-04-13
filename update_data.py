@@ -7,6 +7,9 @@ import numpy as np
 from datetime import datetime, timedelta
 import requests
 
+# 대시보드와 동일한 FMP API 키 사용 (SEC 차단 원천 봉쇄)
+FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
+
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
     conn.execute("""
@@ -25,18 +28,24 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    headers = {'User-Agent': 'Mozilla/5.0'} 
+    """SEC 대신 FMP API를 사용하여 Nasdaq, NYSE 상장 종목만 필터링합니다."""
     try:
-        url = "https://www.sec.gov/files/company_tickers_exchange.json"
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status() 
-        res_json = res.json()
-        df_sec = pd.DataFrame(res_json['data'], columns=res_json['fields'])
-        df_sec = df_sec[df_sec['exchange'].isin(['Nasdaq', 'NYSE'])]
-        df_sec['symbol'] = df_sec['ticker'].str.upper().replace('.', '-')
-        return df_sec[['symbol', 'name']].copy()
-    except Exception as e: 
-        print(f"🚨 SEC 데이터 로드 실패: {e}") 
+        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        
+        df = pd.DataFrame(res.json())
+        # 나스닥, 뉴욕거래소 종목이면서 ETF/Fund가 아닌 일반 주식(stock)만 필터링
+        df_filtered = df[
+            (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
+            (df['type'] == 'stock')
+        ].copy()
+        
+        df_filtered['symbol'] = df_filtered['symbol'].str.upper().str.replace('.', '-')
+        return df_filtered[['symbol', 'name']].copy()
+        
+    except Exception as e:
+        print(f"🚨 FMP 종목 리스트 로드 실패: {e}")
         return pd.DataFrame()
 
 def update_database():
@@ -54,19 +63,16 @@ def update_database():
     
     print(f"🚀 1단계: {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
 
-    # yfinance 다운로드 방식 개선 (개별 데이터 보존)
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
         try:
-            # group_by='ticker'를 유지하되, 통째로 dropna() 하지 않음
             price_data = yf.download(chunk, period="1y", interval="1d", progress=False, group_by='ticker')
         except:
             time.sleep(2); continue
 
         for ticker in chunk:
             try:
-                # 단일 종목일 때와 다중 종목일 때의 컬럼 구조 대응
                 if len(chunk) == 1:
                     hist = price_data.copy()
                 else:
@@ -75,26 +81,23 @@ def update_database():
                 
                 hist = hist.dropna(subset=['Close', 'Volume'])
                 
-                # 최소 데이터 기준 완화 (신규 상장주 포함을 위해 65일로 축소)
+                # 최소 데이터 기준 (신규 상장주 포함을 위해 65일)
                 if len(hist) < 65: continue
 
                 p = hist['Close']
                 v = hist['Volume']
                 
-                # RS 계산 (최근 1분기 및 1달 가중치)
                 current_p = float(p.iloc[-1])
                 rs_raw = (current_p / p.iloc[-21] * 2) + (current_p / p.iloc[-63] * 2) if len(hist) >= 63 else 0
                 
-                # 거래대금(ADV) 계산 (최근 50일 평균 거래량 * 현재가, 달러 단위)
                 adv_50 = float((v.tail(50).mean() * current_p))
 
-                # AD 수급 로직 개선 (ZeroDivisionError 방지 및 추세 반영)
+                # AD 수급 로직
                 v_mean = v.rolling(50).mean().bfill()
                 pct_change = p.pct_change().fillna(0) * 100
                 ad_raw = np.where(v_mean > 0, (v / v_mean) * pct_change, 0)
                 ad_raw_sum = pd.Series(ad_raw).tail(65).sum()
 
-                # 산업군 업데이트 (알 수 없는 경우)
                 industry = base_df.loc[base_df['symbol'] == ticker, 'industry'].values[0]
 
                 all_results.append({
@@ -114,7 +117,6 @@ def update_database():
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
     
-    # AD 등급 산정 (중복값 에러 방지)
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
@@ -125,7 +127,6 @@ def update_database():
     df = pd.merge(df, smr_db, on='symbol', how='left')
 
     ninety_days_ago = datetime.now() - timedelta(days=90)
-    # RS 70 이상 주도주이거나 기존에 데이터가 없는 종목 중 90일 지난 종목만 업데이트
     needs_smr_update = df[
         (df['rs_score'] >= 70) & 
         ((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))
@@ -138,7 +139,6 @@ def update_database():
                 tk = yf.Ticker(ticker)
                 qf = tk.quarterly_financials
                 
-                # 다양한 야후 파이낸스 키값 대응
                 rev_key = 'Total Revenue' if 'Total Revenue' in qf.index else 'Operating Revenue' if 'Operating Revenue' in qf.index else None
                 net_key = 'Net Income' if 'Net Income' in qf.index else None
 
