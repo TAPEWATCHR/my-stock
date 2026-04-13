@@ -111,7 +111,7 @@ if not df.empty:
                         else: st.session_state.ind_sel.append(ind)
                         st.rerun()
 
-        # SMR / AD 등급 필터 (기존 로직 유지)
+        # SMR / AD 등급 필터
         def btn_filter(label, key):
             if key not in st.session_state: st.session_state[key] = ["A", "B", "C"]
             st.caption(label)
