@@ -52,7 +52,7 @@ def init_db():
 def get_pure_exchange_stocks():
     """SEC 대신 FMP API를 사용하여 Nasdaq, NYSE 상장 종목만 필터링합니다."""
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={1kJBflGjsp5fCgbancejhI5bN5iavEJF}"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         
