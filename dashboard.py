@@ -11,12 +11,9 @@ FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
     conn.execute("CREATE TABLE IF NOT EXISTS favorites (symbol TEXT PRIMARY KEY)")
-    # 기업 정보 마스터 테이블 (산업군, 개요 저장용)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS company_profiles (
-            symbol TEXT PRIMARY KEY, 
-            industry TEXT, 
-            description TEXT
+            symbol TEXT PRIMARY KEY, industry TEXT, description TEXT
         )
     """)
     conn.close()
@@ -28,14 +25,28 @@ def get_data():
     conn.close()
     return df
 
+def toggle_favorite(symbol):
+    conn = sqlite3.connect('ibd_system.db')
+    c = conn.cursor()
+    c.execute("SELECT symbol FROM favorites WHERE symbol=?", (symbol,))
+    if c.fetchone():
+        c.execute("DELETE FROM favorites WHERE symbol=?", (symbol,))
+    else:
+        c.execute("INSERT INTO favorites (symbol) VALUES (?)", (symbol,))
+    conn.commit()
+    conn.close()
+
+def get_favorites():
+    conn = sqlite3.connect('ibd_system.db')
+    favs = pd.read_sql("SELECT symbol FROM favorites", conn)['symbol'].tolist()
+    conn.close()
+    return favs
+
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
     try:
-        # 재무/차트는 API 호출
         i_res = requests.get(f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}").json()
-        h_res = requests.get(f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?serietype=line&apikey={FMP_API_KEY}").json()
         
-        # 개요는 DB 마스터 테이블 우선 확인
         conn = sqlite3.connect('ibd_system.db')
         p_df = pd.read_sql(f"SELECT * FROM company_profiles WHERE symbol='{ticker}'", conn)
         
@@ -44,53 +55,51 @@ def get_detailed_info(ticker):
         else:
             p_res = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}").json()
             info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
-            if info: # 새로 가져온 건 DB에 저장
+            if info: 
                 conn.execute("INSERT OR REPLACE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)",
                              (ticker, info.get('industry'), info.get('description')))
                 conn.commit()
         conn.close()
-        return pd.DataFrame(i_res), info, pd.DataFrame(h_res.get('historical', []))
-    except: return pd.DataFrame(), {}, pd.DataFrame()
+        return pd.DataFrame(i_res), info
+    except: return pd.DataFrame(), {}
 
-# --- CSS 설정 ---
+def format_adv(val):
+    if val >= 1e9: return f"${val/1e9:.2f}B"
+    elif val >= 1e6: return f"${val/1e6:.2f}M"
+    return f"${val:,.0f}"
+
 st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
 st.markdown("""
 <style>
     .stApp { background-color: #161C27 !important; }
-    /* 메인 텍스트 밝게 */
     .block-container p, .block-container span, .block-container h1, .block-container h2, 
     .block-container h3, .block-container h4, .block-container label { color: #FFFFFF !important; }
-    
-    /* 사이드바 스타일 및 '전체' 글씨 크기 */
     [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { 
         color: #1E293B !important; font-size: 13px;
     }
-    [data-testid="stSidebar"] button div:contains("전체") { font-size: 11px !important; }
-
-    /* 4. 저장 버튼 및 체크박스 명도 대비 수정 */
     .stButton > button { 
         background-color: #FFFFFF !important; color: #1E293B !important; 
         border: 1px solid #CBD5E1 !important; font-weight: bold; 
     }
-    /* 데이터프레임 툴바(돋보기 등) 배경 밝게, 아이콘 어둡게 */
-    [data-testid="stElementToolbar"] { background-color: #FFFFFF !important; border: 1px solid #DDD; }
-    [data-testid="stElementToolbar"] svg { fill: #1E293B !important; }
-    
-    .overview-panel { background: #2A3143; padding: 1.2rem; border-radius: 8px; color: #FFFFFF !important; }
+    .overview-panel { background: #2A3143; padding: 1.2rem; border-radius: 8px; color: #FFFFFF !important; line-height: 1.6;}
+    .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6;}
+    .check-pass { border-left-color: #10b981; }
+    .check-fail { border-left-color: #ef4444; }
 </style>
 """, unsafe_allow_html=True)
 
 init_db()
 df = get_data()
+fav_list = get_favorites()
 
 if not df.empty:
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         rs_m = st.slider("최소 RS 점수", 1, 99, 80)
+        min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0) # 거래대금 필터 추가
         
-        # 3. 산업군 필터 (버튼 + 동그라미 표시)
         with st.expander("🏭 산업군 필터"):
             all_inds = sorted(df['industry'].unique().tolist())
             if 'ind_sel' not in st.session_state: st.session_state.ind_sel = all_inds
@@ -101,17 +110,15 @@ if not df.empty:
                 st.session_state.ind_sel = [] if is_all else all_inds
                 st.rerun()
             
-            # 산업군 목록을 2열로 배치
             cols = st.columns(2)
             for idx, ind in enumerate(all_inds):
                 with cols[idx % 2]:
                     is_sel = ind in st.session_state.ind_sel
-                    if st.button(f"{'●' if is_sel else '○'} {ind[:12]}..", key=f"ind_{ind}", use_container_width=True):
+                    if st.button(f"{'●' if is_sel else '○'} {str(ind)[:12]}..", key=f"ind_{ind}", use_container_width=True):
                         if is_sel: st.session_state.ind_sel.remove(ind)
                         else: st.session_state.ind_sel.append(ind)
                         st.rerun()
 
-        # SMR / AD 등급 필터
         def btn_filter(label, key):
             if key not in st.session_state: st.session_state[key] = ["A", "B", "C"]
             st.caption(label)
@@ -129,32 +136,99 @@ if not df.empty:
 
         smr_sel = btn_filter("SMR 등급", "smr_sel")
         ad_sel = btn_filter("AD 수급 등급", "ad_sel")
+        
+        show_fav_only = st.checkbox("⭐ 관심종목만 보기", value=False)
 
-        mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
-               (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
-               (df['industry'].isin(st.session_state.ind_sel))
-        f_df = df[mask].sort_values('rs_score', ascending=False).copy()
+    # 데이터 필터링 적용
+    mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
+           (df['adv_50'] >= min_adv_m * 1000000) & \
+           (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
+           (df['industry'].isin(st.session_state.ind_sel))
+    
+    f_df = df[mask].sort_values('rs_score', ascending=False).copy()
+    
+    if show_fav_only:
+        f_df = f_df[f_df['symbol'].isin(fav_list)]
 
-    col_l, col_r = st.columns([4, 3])
+    # 거래대금 포맷팅을 위한 표시용 데이터프레임
+    display_df = f_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
+    display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
+
+    col_l, col_r = st.columns([4, 4])
     with col_l:
-        st.subheader(f"Leaders List ({len(f_df)})")
-        sel_row = st.dataframe(f_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry']],
-                                hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
+        st.subheader(f"Leaders List ({len(display_df)})")
+        sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
 
     with col_r:
         if len(sel_row.selection.rows) > 0:
             target = f_df.iloc[sel_row.selection.rows[0]]
             ticker = target['symbol']
             
-            st.markdown(f"## {ticker}")
-            if st.button("☆ 관심종목 저장"): pass # 기존 저장 로직 연결
+            c1, c2 = st.columns([3, 1])
+            with c1: st.markdown(f"## {ticker} ({target['industry']})")
+            with c2:
+                is_fav = ticker in fav_list
+                if st.button("⭐ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
+                    toggle_favorite(ticker)
+                    st.rerun()
             
-            q_inc, info, p_hist = get_detailed_info(ticker)
-            t_chart, t_fin, t_check, t_biz = st.tabs(["📊 차트", "🧾 재무", "🛡️ 체크", "🏢 개요"])
+            q_inc, info = get_detailed_info(ticker)
+            t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무", "🏢 개요"])
             
+            with t_chart:
+                # 트레이딩뷰 Advanced Chart 위젯 삽입
+                tv_widget = f"""
+                <div class="tradingview-widget-container" style="height: 500px; width: 100%;">
+                  <div id="tradingview_{ticker}" style="height: calc(100% - 32px); width: 100%;"></div>
+                  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+                  <script type="text/javascript">
+                  new TradingView.widget({{
+                  "autosize": true,
+                  "symbol": "{ticker}",
+                  "interval": "D",
+                  "timezone": "Etc/UTC",
+                  "theme": "dark",
+                  "style": "1",
+                  "locale": "kr",
+                  "enable_publishing": false,
+                  "backgroundColor": "#161C27",
+                  "gridColor": "#2A3143",
+                  "hide_top_toolbar": false,
+                  "save_image": false,
+                  "container_id": "tradingview_{ticker}"
+                }});
+                  </script>
+                </div>
+                """
+                components.html(tv_widget, height=500)
+
+            with t_check:
+                st.markdown("#### 미너비니 & 캔슬림 혼합 체크리스트")
+                checks = [
+                    {"name": "현재가 $15 이상 (기관 투자 적합성)", "pass": target['price'] >= 15},
+                    {"name": "RS Score 80 이상 (시장의 주도주)", "pass": target['rs_score'] >= 80},
+                    {"name": "SMR Grade A or B (강력한 펀더멘탈/성장성)", "pass": target['smr_grade'] in ['A', 'B']},
+                    {"name": "AD Grade A or B (기관의 강한 매집 흔적)", "pass": target['ad_grade'] in ['A', 'B']},
+                    {"name": "최소 거래대금 $20M 이상 (유동성 확보)", "pass": target['adv_50'] >= 20000000}
+                ]
+                
+                for c in checks:
+                    status_class = "check-pass" if c["pass"] else "check-fail"
+                    icon = "✅" if c["pass"] else "❌"
+                    st.markdown(f'<div class="check-box {status_class}">{icon} {c["name"]}</div>', unsafe_allow_html=True)
+
             with t_fin:
-                if not q_inc.empty: st.table(q_inc[['date','revenue','eps']].head(4))
-                else: st.error("재무 정보를 불러올 수 없습니다. (API 한도 확인)")
+                if not q_inc.empty: 
+                    # 재무제표 보기 좋게 포맷팅
+                    show_fin = q_inc[['date','revenue','operatingIncome','netIncome','eps']].head(4)
+                    st.dataframe(show_fin, use_container_width=True)
+                else: st.info("상세 재무 정보를 불러오고 있습니다. (API 확인 필요)")
+                
             with t_biz:
-                st.markdown(f'<div class="overview-panel">{info.get("description", "정보 없음")}</div>', unsafe_allow_html=True)
-        else: st.info("👈 리스트에서 종목을 선택해 주세요.")
+                desc = info.get("description", "해당 기업의 개요 정보가 DB에 없습니다.")
+                st.markdown(f'<div class="overview-panel"><strong>[영문 원문]</strong><br><br>{desc}</div>', unsafe_allow_html=True)
+                st.caption("💡 팁: 한글 번역은 API 호출 비용 문제로 원문이 우선 제공됩니다. 추후 DeepL 등 외부 API 연동 시 이 영역을 수정하시면 됩니다.")
+                
+        else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
+else:
+    st.warning("데이터베이스가 비어있습니다. 먼저 `update_data.py`를 실행해주세요.")
