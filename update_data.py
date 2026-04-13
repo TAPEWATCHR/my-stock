@@ -5,7 +5,6 @@ import sqlite3
 import time
 from datetime import datetime
 import requests
-import io
 
 def init_master_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -19,15 +18,28 @@ def init_master_db():
 
 def get_pure_exchange_stocks():
     """SEC와 외부 CSV를 병합하여 기본 종목 리스트 생성"""
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # [핵심 수정] SEC 규정에 맞게 User-Agent에 앱 이름과 본인 이메일을 기재해야 차단되지 않음
+    headers = {'User-Agent': 'MarketLeadersTerminal gkfapwkd@gmail.com'} 
+    
     try:
         url = "https://www.sec.gov/files/company_tickers_exchange.json"
-        res = requests.get(url, headers=headers).json()
-        df_sec = pd.DataFrame(res['data'], columns=res['fields'])
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        # 접속에 실패(403 차단 등)하면 여기서 에러를 발생시켜 except로 보냄
+        res.raise_for_status() 
+        
+        res_json = res.json()
+        df_sec = pd.DataFrame(res_json['data'], columns=res_json['fields'])
         df_sec = df_sec[df_sec['exchange'].isin(['Nasdaq', 'NYSE'])]
         df_sec['symbol'] = df_sec['ticker'].str.upper().replace('.', '-')
+        
+        print(f"✅ SEC 거래소 종목 로드 성공: 총 {len(df_sec)}개")
         return df_sec[['symbol', 'name']].copy()
-    except: return pd.DataFrame()
+        
+    except Exception as e: 
+        # 에러를 숨기지 않고 출력하여 원인을 파악할 수 있게 함
+        print(f"🚨 SEC 데이터 로드 실패: {e}") 
+        return pd.DataFrame()
 
 def update_database():
     init_master_db()
