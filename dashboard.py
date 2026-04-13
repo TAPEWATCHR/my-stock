@@ -5,6 +5,7 @@ import sqlite3
 import requests
 import streamlit.components.v1 as components
 import os
+import altair as alt
 
 FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
 
@@ -24,6 +25,21 @@ def get_data():
     df = pd.read_sql("SELECT * FROM repo_results", conn)
     conn.close()
     return df
+
+def get_rs_history(ticker):
+    if not os.path.exists('ibd_system.db'):
+        return pd.DataFrame()
+    conn = sqlite3.connect('ibd_system.db')
+    try:
+        hist = pd.read_sql(
+            "SELECT date, rs_score FROM rs_history WHERE symbol = ? ORDER BY date ASC",
+            conn,
+            params=(ticker,)
+        )
+    except Exception:
+        hist = pd.DataFrame()
+    conn.close()
+    return hist
 
 def toggle_favorite(symbol):
     conn = sqlite3.connect('ibd_system.db')
@@ -201,6 +217,23 @@ if not df.empty:
                 </div>
                 """
                 components.html(tv_widget, height=500)
+
+                st.markdown("#### 📈 RS 점수 추세")
+                rs_hist_df = get_rs_history(ticker)
+                if not rs_hist_df.empty and len(rs_hist_df) > 1:
+                    rs_hist_df = rs_hist_df.copy()
+                    rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
+                    rs_hist_df['rs_score'] = rs_hist_df['rs_score'].clip(1, 100)
+                    rs_chart = alt.Chart(rs_hist_df).mark_line(
+                        color="#64ffda",
+                        strokeWidth=2
+                    ).encode(
+                        x=alt.X('date:T', title='날짜'),
+                        y=alt.Y('rs_score:Q', title='RS', scale=alt.Scale(domain=[1, 100]))
+                    ).properties(height=240)
+                    st.altair_chart(rs_chart, use_container_width=True)
+                else:
+                    st.info("RS 점수 히스토리가 아직 충분하지 않습니다. update_data.py 실행 후 누적됩니다.")
 
             with t_check:
                 st.markdown("#### 미너비니 & 캔슬림 혼합 체크리스트")

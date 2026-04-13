@@ -25,6 +25,28 @@ def init_db():
             last_updated DATE
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS security_snapshot (
+            date TEXT,
+            symbol TEXT,
+            company_name TEXT,
+            industry TEXT,
+            price REAL,
+            volume REAL,
+            adv_50 REAL,
+            ad_grade TEXT,
+            smr_grade TEXT,
+            rs_score INTEGER,
+            industry_rs_score INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rs_history (
+            symbol TEXT,
+            date TEXT,
+            rs_score INTEGER
+        )
+    """)
     conn.close()
 
 def get_pure_exchange_stocks():
@@ -60,6 +82,7 @@ def update_database():
 
     tickers = base_df['symbol'].tolist()
     all_results = []
+    snapshot_rows = []
     
     print(f"🚀 1단계: {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
 
@@ -103,6 +126,15 @@ def update_database():
                 all_results.append({
                     'symbol': ticker, 'price': current_p, 'rs_raw': rs_raw,
                     'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw_sum
+                })
+                snapshot_rows.append({
+                    'date': datetime.now().strftime('%Y-%m-%d'),
+                    'symbol': ticker,
+                    'company_name': base_df.loc[base_df['symbol'] == ticker, 'name'].values[0],
+                    'industry': industry,
+                    'price': current_p,
+                    'volume': float(v.iloc[-1]),
+                    'adv_50': adv_50
                 })
             except Exception as e:
                 continue
@@ -171,6 +203,22 @@ def update_database():
 
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
+
+    # RS 이력 저장 (차트용)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    rs_history_df = final_df[['symbol', 'rs_score']].copy()
+    rs_history_df['date'] = today_str
+    rs_history_df[['symbol', 'date', 'rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
+
+    # 원천 스냅샷 저장 (종목/가격/거래량/산업군 + 등급)
+    if snapshot_rows:
+        snapshot_df = pd.DataFrame(snapshot_rows)
+        snapshot_df = snapshot_df.merge(
+            final_df[['symbol', 'ad_grade', 'smr_grade', 'rs_score', 'industry_rs_score']],
+            on='symbol',
+            how='left'
+        )
+        snapshot_df.to_sql('security_snapshot', conn, if_exists='replace', index=False)
     
     conn.close()
     print(f"✅ 업데이트 완료! 총 {len(final_df)}개 종목 저장됨.")
