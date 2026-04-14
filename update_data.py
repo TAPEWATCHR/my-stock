@@ -9,14 +9,14 @@ import requests
 import os
 import sys
 
-# 1. GitHub Secrets에서 키를 가져옵니다. (하드코딩 완전 삭제)
+# GitHub Secrets에서 키를 가져옵니다.
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
-# 2. 키가 없으면 안전하게 강제 종료
 if not FMP_API_KEY:
     print("🚨 치명적 에러: FMP_API_KEY를 찾을 수 없습니다!")
-    print("GitHub 저장소의 Settings -> Secrets and variables -> Actions에 'FMP_API_KEY'를 등록했는지 확인하세요.")
     sys.exit(1)
+else:
+    print(f"🔑 사용 중인 API 키: {FMP_API_KEY[:4]}... (정상 로드됨)")
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -48,27 +48,32 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP v3 API를 사용하여 미국 주식 전체를 가져옵니다. (URL 인증 방식)"""
+    """FMP 최신 Stable Screener API를 사용하여 나스닥/NYSE 일반 주식만 정확히 가져옵니다."""
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=10)
-        res.raise_for_status()
+        stocks = []
+        # 나스닥과 뉴욕거래소를 각각 호출하여 ETF/Fund를 서버단에서 완벽히 제외합니다.
+        for exch in ['NASDAQ', 'NYSE']:
+            url = f"https://financialmodelingprep.com/stable/company-screener?exchange={exch}&isEtf=false&isFund=false&isActivelyTrading=true&limit=10000&apikey={FMP_API_KEY}"
+            res = requests.get(url, timeout=15)
+            res.raise_for_status()
+            data = res.json()
+            if data:
+                stocks.append(pd.DataFrame(data))
         
-        df = pd.DataFrame(res.json())
+        if not stocks:
+            print("🚨 스크리너 데이터가 비어있습니다. API 키나 네트워크를 확인하세요.")
+            return pd.DataFrame()
+            
+        df = pd.concat(stocks, ignore_index=True)
+        df['symbol'] = df['symbol'].str.upper().str.replace('.', '-')
         
-        df_filtered = df[
-            (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
-            (df['type'] == 'stock')
-        ].copy()
+        name_col = 'companyName' if 'companyName' in df.columns else 'name'
+        result_df = df[['symbol', name_col]].rename(columns={name_col: 'name'})
         
-        df_filtered['symbol'] = df_filtered['symbol'].str.upper().str.replace('.', '-')
-        
-        name_col = 'companyName' if 'companyName' in df_filtered.columns else 'name'
-        result_df = df_filtered[['symbol', name_col]].rename(columns={name_col: 'name'})
         return result_df.copy()
         
     except Exception as e:
-        print(f"🚨 FMP 종목 리스트 로드 실패: {e}")
+        print(f"🚨 FMP 스크리너 API 로드 실패: {e}")
         return pd.DataFrame()
 
 def update_database():
