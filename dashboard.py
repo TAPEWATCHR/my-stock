@@ -114,7 +114,7 @@ if not df.empty:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         rs_m = st.slider("최소 RS 점수", 1, 99, 80)
-        min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0) # 거래대금 필터 추가
+        min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
         
         with st.expander("🏭 산업군 필터"):
             all_inds = sorted(df['industry'].unique().tolist())
@@ -155,7 +155,6 @@ if not df.empty:
         
         show_fav_only = st.checkbox("⭐ 관심종목만 보기", value=False)
 
-    # 데이터 필터링 적용
     mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
            (df['adv_50'] >= min_adv_m * 1000000) & \
            (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
@@ -166,7 +165,6 @@ if not df.empty:
     if show_fav_only:
         f_df = f_df[f_df['symbol'].isin(fav_list)]
 
-    # 거래대금 포맷팅을 위한 표시용 데이터프레임
     display_df = f_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
@@ -192,7 +190,6 @@ if not df.empty:
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무", "🏢 개요"])
             
             with t_chart:
-                # 트레이딩뷰 Advanced Chart 위젯 삽입
                 tv_widget = f"""
                 <div class="tradingview-widget-container" style="height: 500px; width: 100%;">
                   <div id="tradingview_{ticker}" style="height: calc(100% - 32px); width: 100%;"></div>
@@ -252,7 +249,6 @@ if not df.empty:
 
             with t_fin:
                 if not q_inc.empty: 
-                    # 재무제표 보기 좋게 포맷팅
                     show_fin = q_inc[['date','revenue','operatingIncome','netIncome','eps']].head(4)
                     st.dataframe(show_fin, use_container_width=True)
                 else: st.info("상세 재무 정보를 불러오고 있습니다. (API 확인 필요)")
