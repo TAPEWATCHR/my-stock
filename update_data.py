@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import requests
 
-# 대시보드와 동일한 FMP API 키 사용 (SEC 차단 원천 봉쇄)
+# FMP API 키 세팅
 FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
 
 def init_db():
@@ -27,37 +27,27 @@ def init_db():
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS security_snapshot (
-            date TEXT,
-            symbol TEXT,
-            company_name TEXT,
-            industry TEXT,
-            price REAL,
-            volume REAL,
-            adv_50 REAL,
-            ad_grade TEXT,
-            smr_grade TEXT,
-            rs_score INTEGER,
-            industry_rs_score INTEGER
+            date TEXT, symbol TEXT, company_name TEXT, industry TEXT,
+            price REAL, volume REAL, adv_50 REAL, ad_grade TEXT,
+            smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER
         )
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rs_history (
-            symbol TEXT,
-            date TEXT,
-            rs_score INTEGER
+            symbol TEXT, date TEXT, rs_score INTEGER
         )
     """)
     conn.close()
 
 def get_pure_exchange_stocks():
-    """SEC 대신 FMP API를 사용하여 Nasdaq, NYSE 상장 종목만 필터링합니다."""
+    """FMP API를 사용하여 Nasdaq, NYSE 상장 미국 일반 주식 전체를 필터링합니다."""
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={1kJBflGjsp5fCgbancejhI5bN5iavEJF}"
+        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         
         df = pd.DataFrame(res.json())
-        # 나스닥, 뉴욕거래소 종목이면서 ETF/Fund가 아닌 일반 주식(stock)만 필터링
+        # 나스닥, 뉴욕거래소 상장 '일반 주식' 전체 추출 (약 4500~5000개)
         df_filtered = df[
             (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
             (df['type'] == 'stock')
@@ -84,8 +74,8 @@ def update_database():
     all_results = []
     snapshot_rows = []
     
-    print(f"🚀 1단계: {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
-
+    print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
+    # 참고: 가격 데이터는 yfinance 대량 다운로드가 압도적으로 빠르므로 yfinance 유지
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
@@ -104,7 +94,7 @@ def update_database():
                 
                 hist = hist.dropna(subset=['Close', 'Volume'])
                 
-                # 최소 데이터 기준 (신규 상장주 포함을 위해 65일)
+                # 최소 데이터 기준 65일
                 if len(hist) < 65: continue
 
                 p = hist['Close']
@@ -139,7 +129,7 @@ def update_database():
             except Exception as e:
                 continue
         
-        if i % 500 == 0 and i > 0: print(f" > {i}개 완료...")
+        if i % 500 == 0 and i > 0: print(f" > {i}개 종목 가격 분석 완료...")
         time.sleep(0.5)
 
     if not all_results: 
@@ -152,7 +142,7 @@ def update_database():
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
-    print("🚀 2단계: SMR(재무) 등급 스마트 업데이트 진행 중...")
+    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 스마트 업데이트 진행 중...")
     
     smr_db = pd.read_sql("SELECT * FROM smr_cache", conn)
     smr_db['last_updated'] = pd.to_datetime(smr_db['last_updated'])
@@ -165,20 +155,20 @@ def update_database():
     ]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 종목 재무 데이터 업데이트 중...")
+        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 업데이트 중 (FMP API 사용)...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                tk = yf.Ticker(ticker)
-                qf = tk.quarterly_financials
+                # [핵심 변경점] yfinance 대신 FMP의 income-statement API 사용
+                url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=4&apikey={FMP_API_KEY}"
+                res = requests.get(url, timeout=5)
                 
-                rev_key = 'Total Revenue' if 'Total Revenue' in qf.index else 'Operating Revenue' if 'Operating Revenue' in qf.index else None
-                net_key = 'Net Income' if 'Net Income' in qf.index else None
-
-                if rev_key and not qf.empty:
-                    rev = qf.loc[rev_key].dropna().values
-                    net = qf.loc[net_key].dropna().values if net_key else [0]
-                    
-                    if len(rev) >= 3:
+                if res.status_code == 200:
+                    qf = res.json()
+                    if len(qf) >= 3:
+                        # 인덱스 0이 가장 최근 분기입니다.
+                        rev = [item.get('revenue', 0) for item in qf]
+                        net = [item.get('netIncome', 0) for item in qf]
+                        
                         g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
                         g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
                         smr_acc = g0 - g1
@@ -189,8 +179,12 @@ def update_database():
                                      (ticker, smr_acc, is_prof, today_str))
                         conn.commit()
                         df.loc[df['symbol'] == ticker, ['smr_acc', 'is_prof']] = [smr_acc, is_prof]
-            except: pass
-            if idx % 50 == 0 and idx > 0: time.sleep(1) 
+            except Exception as e:
+                pass
+            
+            # FMP Starter 플랜의 분당 300회(초당 5회) 호출 제한을 안전하게 지키기 위한 딜레이
+            time.sleep(0.2)
+            if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 갱신 완료")
             
     df['smr_acc'] = df['smr_acc'].fillna(0)
     df['is_prof'] = df['is_prof'].fillna(0)
@@ -210,7 +204,7 @@ def update_database():
     rs_history_df['date'] = today_str
     rs_history_df[['symbol', 'date', 'rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
 
-    # 원천 스냅샷 저장 (종목/가격/거래량/산업군 + 등급)
+    # 원천 스냅샷 저장
     if snapshot_rows:
         snapshot_df = pd.DataFrame(snapshot_rows)
         snapshot_df = snapshot_df.merge(
@@ -221,7 +215,7 @@ def update_database():
         snapshot_df.to_sql('security_snapshot', conn, if_exists='replace', index=False)
     
     conn.close()
-    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 종목 저장됨.")
+    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 미국 주식 저장 완료.")
 
 if __name__ == "__main__":
     update_database()
