@@ -3,25 +3,27 @@ name: Update Stock Data
 on:
   schedule:
     - cron: '0 13 * * *'  # 매일 UTC 13:00 (한국 시간 밤 10시) 자동 실행
-  workflow_dispatch:      # 수동 실행(Run workflow) 버튼 활성화
+  workflow_dispatch:      # 수동 실행 버튼 활성화
 
-# GITHUB_TOKEN을 사용해 저장소에 DB 파일을 푸시할 수 있도록 쓰기 권한 부여
 permissions:
   contents: write
+
+# 💡 핵심 해결책: GitHub 서버 잔소리(Warning) 끄기
+# 구버전 액션들을 강제로 최신 Node.js 24 환경에서 돌리도록 지시합니다.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 미국 주식 4500개 수집 시간을 고려한 넉넉한 타임아웃 (6시간)
+    timeout-minutes: 360  # 미국 주식 전체 수집을 위한 넉넉한 타임아웃
 
     steps:
-      # 1. 최신 안정화 버전 v4 사용 (Node.js 20/24 경고 해결)
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 
 
-      # 2. 최신 안정화 버전 v5 사용 (Node.js 20/24 경고 해결)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -33,7 +35,6 @@ jobs:
           pip install yfinance pandas requests numpy requests-cache
 
       - name: Run Update Script
-        # 깃허브 Secrets에 저장해둔 암호(FMP_API_KEY)를 파이썬으로 안전하게 전달
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: python update_data.py
@@ -46,14 +47,11 @@ jobs:
           if [ -f ibd_system.db ]; then
             git add ibd_system.db
             git stash
-            # 원격 저장소의 최신 상태를 가져와서 충돌 방지
             git pull origin main --rebase
             git stash pop || echo "No changes to pop"
             git add ibd_system.db
             
-            # DB 파일에 변경 사항이 있을 때만 커밋 및 푸시 진행
-            # [skip ci] 태그를 달아 푸시로 인해 Actions가 무한 반복 실행되는 것을 방지
             git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update: 미국 주식 데이터 및 SMR 등급 갱신 [skip ci]" && git push)
           else
-            echo "🚨 에러: ibd_system.db 파일이 생성되지 않았습니다. 파이썬 스크립트 실행 로그를 확인하세요."
+            echo "🚨 에러: ibd_system.db 파일이 생성되지 않았습니다."
           fi
