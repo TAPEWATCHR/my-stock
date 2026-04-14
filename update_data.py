@@ -9,7 +9,6 @@ import requests
 import os
 import sys
 
-# GitHub Secrets에서 키를 가져옵니다.
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 if not FMP_API_KEY:
@@ -20,38 +19,15 @@ else:
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS company_profiles (
-            symbol TEXT PRIMARY KEY, industry TEXT, description TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS smr_cache (
-            symbol TEXT PRIMARY KEY, 
-            smr_acc REAL, 
-            is_prof INTEGER, 
-            last_updated DATE
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS security_snapshot (
-            date TEXT, symbol TEXT, company_name TEXT, industry TEXT,
-            price REAL, volume REAL, adv_50 REAL, ad_grade TEXT,
-            smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS rs_history (
-            symbol TEXT, date TEXT, rs_score INTEGER
-        )
-    """)
+    conn.execute("CREATE TABLE IF NOT EXISTS company_profiles (symbol TEXT PRIMARY KEY, industry TEXT, description TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS smr_cache (symbol TEXT PRIMARY KEY, smr_acc REAL, is_prof INTEGER, last_updated DATE)")
+    conn.execute("CREATE TABLE IF NOT EXISTS security_snapshot (date TEXT, symbol TEXT, company_name TEXT, industry TEXT, price REAL, volume REAL, adv_50 REAL, ad_grade TEXT, smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
+    conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER)")
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP 최신 Stable Screener API를 사용하여 나스닥/NYSE 일반 주식만 정확히 가져옵니다."""
     try:
         stocks = []
-        # 나스닥과 뉴욕거래소를 각각 호출하여 ETF/Fund를 서버단에서 완벽히 제외합니다.
         for exch in ['NASDAQ', 'NYSE']:
             url = f"https://financialmodelingprep.com/stable/company-screener?exchange={exch}&isEtf=false&isFund=false&isActivelyTrading=true&limit=10000&apikey={FMP_API_KEY}"
             res = requests.get(url, timeout=15)
@@ -60,16 +36,17 @@ def get_pure_exchange_stocks():
             if data:
                 stocks.append(pd.DataFrame(data))
         
-        if not stocks:
-            print("🚨 스크리너 데이터가 비어있습니다. API 키나 네트워크를 확인하세요.")
-            return pd.DataFrame()
+        if not stocks: return pd.DataFrame()
             
         df = pd.concat(stocks, ignore_index=True)
         df['symbol'] = df['symbol'].str.upper().str.replace('.', '-')
         
         name_col = 'companyName' if 'companyName' in df.columns else 'name'
-        result_df = df[['symbol', name_col]].rename(columns={name_col: 'name'})
+        # 💡 핵심: industry 컬럼을 살려서 가져옵니다.
+        ind_col = 'industry' if 'industry' in df.columns else 'sector'
         
+        result_df = df[['symbol', name_col, ind_col]].rename(columns={name_col: 'name', ind_col: 'industry'})
+        result_df['industry'] = result_df['industry'].fillna('Unknown')
         return result_df.copy()
         
     except Exception as e:
@@ -82,8 +59,15 @@ def update_database():
     if base_df.empty: return
 
     conn = sqlite3.connect('ibd_system.db')
+    
+    # DB에 산업군 업데이트 (새로운 종목이나 Unknown이었던 종목 갱신)
+    for _, row in base_df.iterrows():
+        conn.execute("INSERT OR IGNORE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)", (row['symbol'], row['industry'], ''))
+        conn.execute("UPDATE company_profiles SET industry = ? WHERE symbol = ? AND (industry = 'Unknown' OR industry IS NULL)", (row['industry'], row['symbol']))
+    conn.commit()
+
     master_profiles = pd.read_sql("SELECT symbol, industry FROM company_profiles", conn)
-    base_df = pd.merge(base_df, master_profiles, on='symbol', how='left')
+    base_df = base_df.drop(columns=['industry']).merge(master_profiles, on='symbol', how='left')
     base_df['industry'] = base_df['industry'].fillna('Unknown')
 
     tickers = base_df['symbol'].tolist()
@@ -102,12 +86,7 @@ def update_database():
 
         for ticker in chunk:
             try:
-                if len(chunk) == 1:
-                    hist = price_data.copy()
-                else:
-                    if ticker not in price_data.columns.levels[0]: continue
-                    hist = price_data[ticker].copy()
-                
+                hist = price_data.copy() if len(chunk) == 1 else price_data[ticker].copy() if ticker in price_data.columns.levels[0] else pd.DataFrame()
                 hist = hist.dropna(subset=['Close', 'Volume'])
                 if len(hist) < 65: continue
 
@@ -125,32 +104,17 @@ def update_database():
 
                 industry = base_df.loc[base_df['symbol'] == ticker, 'industry'].values[0]
 
-                all_results.append({
-                    'symbol': ticker, 'price': current_p, 'rs_raw': rs_raw,
-                    'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw_sum
-                })
-                snapshot_rows.append({
-                    'date': datetime.now().strftime('%Y-%m-%d'),
-                    'symbol': ticker,
-                    'company_name': base_df.loc[base_df['symbol'] == ticker, 'name'].values[0],
-                    'industry': industry,
-                    'price': current_p,
-                    'volume': float(v.iloc[-1]),
-                    'adv_50': adv_50
-                })
-            except Exception as e:
-                continue
+                all_results.append({'symbol': ticker, 'price': current_p, 'rs_raw': rs_raw, 'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw_sum})
+                snapshot_rows.append({'date': datetime.now().strftime('%Y-%m-%d'), 'symbol': ticker, 'company_name': base_df.loc[base_df['symbol'] == ticker, 'name'].values[0], 'industry': industry, 'price': current_p, 'volume': float(v.iloc[-1]), 'adv_50': adv_50})
+            except: continue
         
-        if i % 500 == 0 and i > 0: print(f" > {i}개 종목 가격 분석 완료...")
+        if i % 500 == 0 and i > 0: print(f" > {i}개 완료...")
         time.sleep(0.5)
 
-    if not all_results: 
-        print("🚨 수집된 데이터가 없습니다.")
-        return
+    if not all_results: return
     
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
-    
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
@@ -161,10 +125,7 @@ def update_database():
     df = pd.merge(df, smr_db, on='symbol', how='left')
 
     ninety_days_ago = datetime.now() - timedelta(days=90)
-    needs_smr_update = df[
-        (df['rs_score'] >= 70) & 
-        ((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))
-    ]['symbol'].tolist()
+    needs_smr_update = df[(df['rs_score'] >= 70) & ((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))]['symbol'].tolist()
 
     if needs_smr_update:
         print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 갱신 중...")
@@ -172,27 +133,21 @@ def update_database():
             try:
                 url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4&apikey={FMP_API_KEY}"
                 res = requests.get(url, timeout=5)
-                
                 if res.status_code == 200:
                     qf = res.json()
                     if len(qf) >= 3:
                         rev = [item.get('revenue', 0) for item in qf]
                         net = [item.get('netIncome', 0) for item in qf]
-                        
                         g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
                         g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
                         smr_acc = g0 - g1
                         is_prof = 1 if len(net) > 0 and net[0] > 0 else 0
                         
-                        today_str = datetime.now().strftime('%Y-%m-%d')
-                        conn.execute("INSERT OR REPLACE INTO smr_cache (symbol, smr_acc, is_prof, last_updated) VALUES (?, ?, ?, ?)", 
-                                     (ticker, smr_acc, is_prof, today_str))
+                        conn.execute("INSERT OR REPLACE INTO smr_cache (symbol, smr_acc, is_prof, last_updated) VALUES (?, ?, ?, ?)", (ticker, smr_acc, is_prof, datetime.now().strftime('%Y-%m-%d')))
                         conn.commit()
                         df.loc[df['symbol'] == ticker, ['smr_acc', 'is_prof']] = [smr_acc, is_prof]
-            except Exception as e:
-                pass
-            
-            time.sleep(0.2)
+            except: pass
+            time.sleep(0.25) # 💡 300회/분 제한을 넉넉히 피하기 위해 0.25초로 조정
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
             
     df['smr_acc'] = df['smr_acc'].fillna(0)
@@ -207,18 +162,12 @@ def update_database():
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
 
-    today_str = datetime.now().strftime('%Y-%m-%d')
     rs_history_df = final_df[['symbol', 'rs_score']].copy()
-    rs_history_df['date'] = today_str
+    rs_history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     rs_history_df[['symbol', 'date', 'rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
 
     if snapshot_rows:
-        snapshot_df = pd.DataFrame(snapshot_rows)
-        snapshot_df = snapshot_df.merge(
-            final_df[['symbol', 'ad_grade', 'smr_grade', 'rs_score', 'industry_rs_score']],
-            on='symbol',
-            how='left'
-        )
+        snapshot_df = pd.DataFrame(snapshot_rows).merge(final_df[['symbol', 'ad_grade', 'smr_grade', 'rs_score', 'industry_rs_score']], on='symbol', how='left')
         snapshot_df.to_sql('security_snapshot', conn, if_exists='replace', index=False)
     
     conn.close()
