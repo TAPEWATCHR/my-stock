@@ -7,12 +7,16 @@ import numpy as np
 from datetime import datetime, timedelta
 import requests
 import os
+import sys
 
-# GitHub Secrets에서 키를 가져오거나, 로컬 기본값(현승님 키)을 사용합니다.
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
+# 1. GitHub Secrets에서 키를 가져옵니다. (하드코딩 완전 삭제)
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
-# URL에 키를 노출하지 않고, 공식 문서 권장대로 Header에 숨겨서 전송합니다.
-FMP_HEADERS = {"apikey": FMP_API_KEY}
+# 2. 키가 없으면 안전하게 강제 종료
+if not FMP_API_KEY:
+    print("🚨 치명적 에러: FMP_API_KEY를 찾을 수 없습니다!")
+    print("GitHub 저장소의 Settings -> Secrets and variables -> Actions에 'FMP_API_KEY'를 등록했는지 확인하세요.")
+    sys.exit(1)
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -44,16 +48,14 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP v3 API를 사용하여 메타데이터(거래소, 타입)가 포함된 미국 주식 전체를 가져옵니다."""
+    """FMP v3 API를 사용하여 미국 주식 전체를 가져옵니다. (URL 인증 방식)"""
     try:
-        # 데이터가 잘려 나오는 stable 대신, 전체 정보가 담긴 v3 오리지널 주소 사용
-        url = "https://financialmodelingprep.com/api/v3/stock/list"
-        res = requests.get(url, headers=FMP_HEADERS, timeout=10)
+        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=10)
         res.raise_for_status()
         
         df = pd.DataFrame(res.json())
         
-        # 나스닥, 뉴욕거래소 종목이면서 일반 주식(stock)만 완벽하게 필터링
         df_filtered = df[
             (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
             (df['type'] == 'stock')
@@ -61,19 +63,14 @@ def get_pure_exchange_stocks():
         
         df_filtered['symbol'] = df_filtered['symbol'].str.upper().str.replace('.', '-')
         
-        # FMP가 회사명 컬럼을 'name' 또는 'companyName'으로 줄 수 있으므로 통합 처리
         name_col = 'companyName' if 'companyName' in df_filtered.columns else 'name'
-        
-        # 최종적으로 대시보드에서 쓸 수 있게 'name'으로 통일해서 반환
         result_df = df_filtered[['symbol', name_col]].rename(columns={name_col: 'name'})
         return result_df.copy()
         
     except Exception as e:
         print(f"🚨 FMP 종목 리스트 로드 실패: {e}")
-        if 'df' in locals():
-            print(f"💡 현재 수신된 컬럼 목록: {df.columns.tolist()}")
         return pd.DataFrame()
-        
+
 def update_database():
     init_db()
     base_df = get_pure_exchange_stocks()
@@ -152,7 +149,7 @@ def update_database():
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
-    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 스마트 업데이트 진행 중...")
+    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 업데이트 진행 중...")
     
     smr_db = pd.read_sql("SELECT * FROM smr_cache", conn)
     smr_db['last_updated'] = pd.to_datetime(smr_db['last_updated'])
@@ -165,12 +162,11 @@ def update_database():
     ]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 업데이트 중...")
+        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 갱신 중...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                # v3 대신 stable/income-statement 사용 및 Header 인증
-                url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4"
-                res = requests.get(url, headers=FMP_HEADERS, timeout=5)
+                url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4&apikey={FMP_API_KEY}"
+                res = requests.get(url, timeout=5)
                 
                 if res.status_code == 200:
                     qf = res.json()
@@ -191,8 +187,8 @@ def update_database():
             except Exception as e:
                 pass
             
-            time.sleep(0.2) # 호출 한도 제한을 위한 딜레이
-            if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 갱신 완료")
+            time.sleep(0.2)
+            if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
             
     df['smr_acc'] = df['smr_acc'].fillna(0)
     df['is_prof'] = df['is_prof'].fillna(0)
