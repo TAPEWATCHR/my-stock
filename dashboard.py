@@ -50,9 +50,10 @@ def get_favorites():
     conn.close()
     return favs
 
+# 💡 핵심: 함수 이름을 변경하여 Streamlit Cloud의 꼬인 캐시를 강제로 초기화시킵니다.
 @st.cache_data(ttl=3600)
-def fetch_financials(ticker):
-    if not FMP_API_KEY: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+def get_fin_data(ticker):
+    if not FMP_API_KEY: return [], [], [], {}
     try:
         url_is_ann = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=annual&limit=5&apikey={FMP_API_KEY}"
         is_ann = requests.get(url_is_ann).json()
@@ -65,21 +66,28 @@ def fetch_financials(ticker):
         
         url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={FMP_API_KEY}"
         p_res = requests.get(url_prof).json()
-        info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
+        info = p_res[0] if p_res and isinstance(p_res, list) else {}
         
-        return pd.DataFrame(is_ann), pd.DataFrame(bs_ann), pd.DataFrame(is_qtr), info
-    except: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+        return is_ann, bs_ann, is_qtr, info
+    except: return [], [], [], {}
 
+# 어떤 문자가 들어와도 다운되지 않도록 포맷팅 함수 강화
 def format_currency(val):
-    if pd.isna(val) or val == 0: return "0"
-    return f"{int(val / 1000):,}"
+    try:
+        val = float(val)
+        if pd.isna(val) or val == 0: return "0"
+        return f"{int(val / 1000):,}"
+    except: return "0"
 
 def calc_growth(current, previous):
-    if pd.isna(current) or pd.isna(previous) or previous == 0: return None
-    return ((current - previous) / abs(previous)) * 100
+    try:
+        current, previous = float(current), float(previous)
+        if pd.isna(current) or pd.isna(previous) or previous == 0: return None
+        return ((current - previous) / abs(previous)) * 100
+    except: return None
 
 def format_growth(val):
-    if pd.isna(val): return "-"
+    if pd.isna(val) or val is None: return "-"
     return f"{val:.1f}%"
 
 def format_adv(val):
@@ -113,7 +121,6 @@ df = get_data()
 fav_list = get_favorites()
 
 if not df.empty:
-    # ================= 사이드바 =================
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
@@ -159,7 +166,6 @@ if not df.empty:
         ad_sel = btn_filter("AD 수급 등급", "ad_sel")
         show_fav_only = st.checkbox("⭐ 관심종목만 보기", value=False)
 
-    # ================= 필터 적용 =================
     mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
            (df['adv_50'] >= min_adv_m * 1000000) & (df['industry_rs_score'] >= ind_rs_m) & \
            (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
@@ -171,7 +177,6 @@ if not df.empty:
     display_df = f_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
-    # ================= 메인 화면 =================
     col_l, col_r = st.columns([4, 5])
     with col_l:
         st.subheader(f"Leaders List ({len(display_df)})")
@@ -192,10 +197,11 @@ if not df.empty:
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
             
-            is_ann, bs_ann, is_qtr, info = fetch_financials(ticker)
+            # API에서 원시 리스트 반환
+            is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
+            
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
-            # --- 탭 1: 차트 ---
             with t_chart:
                 tv_widget = f"""
                 <div class="tradingview-widget-container" style="height: 500px; width: 100%;">
@@ -216,7 +222,6 @@ if not df.empty:
                     ).properties(height=240)
                     st.altair_chart(rs_chart, use_container_width=True)
 
-            # --- 탭 2: 체크리스트 ---
             with t_check:
                 st.markdown("#### 캔슬림 (CAN SLIM) 전략")
                 canslim = [
@@ -241,24 +246,26 @@ if not df.empty:
                 for c in minervini:
                     st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
 
-            # --- 탭 3: 재무제표 (KeyError 무적 방어 로직) ---
             with t_fin:
                 st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
-                # 핵심 방어: 데이터가 비어있지 않고, 기준점(calendarYear)이 존재하는 경우에만 실행
-                if not is_ann.empty and not bs_ann.empty and 'calendarYear' in is_ann.columns and 'calendarYear' in bs_ann.columns:
-                    st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
-                    
-                    req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
-                    req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
-                    
-                    # reindex: 요청한 컬럼 중 없는 것은 자동으로 0으로 채워서 생성함 (에러 완벽 차단)
-                    is_safe = is_ann.reindex(columns=req_is_ann, fill_value=0)
-                    bs_safe = bs_ann.reindex(columns=req_bs_ann, fill_value=0)
+                # 💡 안전한 파서 함수: 엉터리 데이터가 오면 에러 대신 안전하게 0으로 채움
+                def safe_parse(data_list, keys, required_key):
+                    if not isinstance(data_list, list) or len(data_list) == 0: return pd.DataFrame()
+                    if required_key not in data_list[0]: return pd.DataFrame()
+                    parsed = [{k: item.get(k) if item.get(k) is not None else 0 for k in keys} for item in data_list]
+                    return pd.DataFrame(parsed)
 
-                    ann_df = is_safe.merge(bs_safe, on='calendarYear', how='left')
+                req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
+                req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
+                
+                is_ann_df = safe_parse(is_ann_raw, req_is_ann, 'calendarYear')
+                bs_ann_df = safe_parse(bs_ann_raw, req_bs_ann, 'calendarYear')
+
+                if not is_ann_df.empty and not bs_ann_df.empty:
+                    st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
+                    ann_df = is_ann_df.merge(bs_ann_df, on='calendarYear', how='left')
                     
-                    ann_df['Rev Growth (YoY)'] = ann_df['revenue'].apply(lambda x: x) 
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률', '영업이익성장률', '순이익성장률']):
                         ann_df[growth_col] = ann_df[col].shift(-1)
                         ann_df[growth_col] = ann_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
@@ -273,15 +280,13 @@ if not df.empty:
                         
                     st.dataframe(ann_df[['연도', '매출액', '매출성장률', '영업이익', '영업이익성장률', '순이익', '순이익성장률', 'EBITDA', '총자산', '총부채', '자본']].head(5), hide_index=True, use_container_width=True)
                 else:
-                    st.info("해당 기업의 연간 상세 재무제표가 아직 공시되지 않았거나, 제공되지 않습니다.")
+                    st.info("해당 기업의 연간 상세 재무제표가 공시되지 않았거나, 제공되지 않습니다.")
 
-                # 분기 데이터 방어 로직 적용
-                if not is_qtr.empty and 'date' in is_qtr.columns:
+                req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
+                qtr_df = safe_parse(is_qtr_raw, req_is_qtr, 'date')
+
+                if not qtr_df.empty:
                     st.markdown("#### 📊 분기별 재무 및 성장률 (최근 3년)")
-                    
-                    req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
-                    qtr_df = is_qtr.reindex(columns=req_is_qtr, fill_value=0)
-                    
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']):
                         qtr_df[growth_col] = qtr_df[col].shift(-4)
                         qtr_df[growth_col] = qtr_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
@@ -296,9 +301,8 @@ if not df.empty:
                         
                     st.dataframe(qtr_df[['발표일', '분기', '매출액', '매출성장률(YoY)', '영업이익', '영업이익성장률(YoY)', '순이익', '순이익성장률(YoY)', 'EPS']].head(12), hide_index=True, use_container_width=True)
                 else:
-                    st.info("해당 기업의 분기 상세 재무제표가 아직 공시되지 않았거나, 제공되지 않습니다.")
+                    st.info("해당 기업의 분기 상세 재무제표가 공시되지 않았거나, 제공되지 않습니다.")
 
-            # --- 탭 4: 개요 번역 ---
             with t_biz:
                 desc_en = info.get("description", "")
                 if desc_en:
