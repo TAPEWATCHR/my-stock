@@ -8,6 +8,7 @@ import os
 import altair as alt
 from deep_translator import GoogleTranslator
 
+# 환경 변수에서 FMP API 키 로드
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 def init_db():
@@ -42,7 +43,10 @@ def toggle_favorite(symbol):
 
 def get_favorites():
     conn = sqlite3.connect('ibd_system.db')
-    favs = pd.read_sql("SELECT symbol FROM favorites", conn)['symbol'].tolist()
+    try:
+        favs = pd.read_sql("SELECT symbol FROM favorites", conn)['symbol'].tolist()
+    except:
+        favs = []
     conn.close()
     return favs
 
@@ -83,6 +87,7 @@ def format_adv(val):
     elif val >= 1e6: return f"${val/1e6:.2f}M"
     return f"${val:,.0f}"
 
+# ================= UI 디자인 =================
 st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
 st.markdown("""
 <style>
@@ -108,6 +113,7 @@ df = get_data()
 fav_list = get_favorites()
 
 if not df.empty:
+    # ================= 사이드바 =================
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
@@ -153,6 +159,7 @@ if not df.empty:
         ad_sel = btn_filter("AD 수급 등급", "ad_sel")
         show_fav_only = st.checkbox("⭐ 관심종목만 보기", value=False)
 
+    # ================= 필터 적용 =================
     mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
            (df['adv_50'] >= min_adv_m * 1000000) & (df['industry_rs_score'] >= ind_rs_m) & \
            (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
@@ -164,6 +171,7 @@ if not df.empty:
     display_df = f_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
+    # ================= 메인 화면 =================
     col_l, col_r = st.columns([4, 5])
     with col_l:
         st.subheader(f"Leaders List ({len(display_df)})")
@@ -187,6 +195,7 @@ if not df.empty:
             is_ann, bs_ann, is_qtr, info = fetch_financials(ticker)
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
+            # --- 탭 1: 차트 ---
             with t_chart:
                 tv_widget = f"""
                 <div class="tradingview-widget-container" style="height: 500px; width: 100%;">
@@ -207,6 +216,7 @@ if not df.empty:
                     ).properties(height=240)
                     st.altair_chart(rs_chart, use_container_width=True)
 
+            # --- 탭 2: 체크리스트 ---
             with t_check:
                 st.markdown("#### 캔슬림 (CAN SLIM) 전략")
                 canslim = [
@@ -231,15 +241,22 @@ if not df.empty:
                 for c in minervini:
                     st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
 
+            # --- 탭 3: 재무제표 (KeyError 방어 로직 포함) ---
             with t_fin:
                 st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
-                # 💡 핵심 수정: 필요한 컬럼이 실제로 있는지 확인하는 방어 로직 추가
-                req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
-                req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
-                
-                if not is_ann.empty and not bs_ann.empty and all(c in is_ann.columns for c in req_is_ann) and all(c in bs_ann.columns for c in req_bs_ann):
+                # 💡 무적 방어 로직: FMP에서 누락한 컬럼을 0으로 강제 생성
+                if not is_ann.empty and not bs_ann.empty:
                     st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
+                    
+                    req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
+                    for col in req_is_ann:
+                        if col not in is_ann.columns: is_ann[col] = 0
+                        
+                    req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
+                    for col in req_bs_ann:
+                        if col not in bs_ann.columns: bs_ann[col] = 0
+
                     ann_df = is_ann[req_is_ann].copy()
                     ann_df = ann_df.merge(bs_ann[req_bs_ann], on='calendarYear', how='left')
                     
@@ -260,9 +277,13 @@ if not df.empty:
                 else:
                     st.info("해당 기업의 연간 상세 재무제표가 아직 제공되지 않습니다.")
 
-                req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
-                if not is_qtr.empty and all(c in is_qtr.columns for c in req_is_qtr):
+                if not is_qtr.empty:
                     st.markdown("#### 📊 분기별 재무 및 성장률 (최근 3년)")
+                    
+                    req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
+                    for col in req_is_qtr:
+                        if col not in is_qtr.columns: is_qtr[col] = 0
+                        
                     qtr_df = is_qtr[req_is_qtr].copy()
                     
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']):
@@ -281,6 +302,7 @@ if not df.empty:
                 else:
                     st.info("해당 기업의 분기 상세 재무제표가 아직 제공되지 않습니다.")
 
+            # --- 탭 4: 개요 번역 ---
             with t_biz:
                 desc_en = info.get("description", "")
                 if desc_en:
