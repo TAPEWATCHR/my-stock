@@ -8,15 +8,14 @@ on:
 permissions:
   contents: write
 
-# 💡 핵심 해결책: GitHub 서버 잔소리(Warning) 끄기
-# 구버전 액션들을 강제로 최신 Node.js 24 환경에서 돌리도록 지시합니다.
+# 💡 깃허브 액션 버전 경고창(Warning) 무시를 위한 환경변수 세팅
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 미국 주식 전체 수집을 위한 넉넉한 타임아웃
+    timeout-minutes: 360  # 여유 있는 수집 시간 보장
 
     steps:
       - name: Checkout code
@@ -51,7 +50,7 @@ jobs:
             git stash pop || echo "No changes to pop"
             git add ibd_system.db
             
-            git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update: 미국 주식 데이터 및 SMR 등급 갱신 [skip ci]" && git push)
+            git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update: 미국 주식 데이터 및 SMR 갱신 [skip ci]" && git push)
           else
             echo "🚨 에러: ibd_system.db 파일이 생성되지 않았습니다."
           fi
