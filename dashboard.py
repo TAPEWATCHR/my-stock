@@ -50,19 +50,15 @@ def get_favorites():
 def fetch_financials(ticker):
     if not FMP_API_KEY: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
     try:
-        # 연간 손익계산서 (5년)
         url_is_ann = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=annual&limit=5&apikey={FMP_API_KEY}"
         is_ann = requests.get(url_is_ann).json()
         
-        # 연간 대차대조표 (5년)
         url_bs_ann = f"https://financialmodelingprep.com/stable/balance-sheet-statement?symbol={ticker}&period=annual&limit=5&apikey={FMP_API_KEY}"
         bs_ann = requests.get(url_bs_ann).json()
         
-        # 분기 손익계산서 (3년 = 12분기)
         url_is_qtr = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=12&apikey={FMP_API_KEY}"
         is_qtr = requests.get(url_is_qtr).json()
         
-        # 기업 개요
         url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={FMP_API_KEY}"
         p_res = requests.get(url_prof).json()
         info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
@@ -72,7 +68,6 @@ def fetch_financials(ticker):
 
 def format_currency(val):
     if pd.isna(val) or val == 0: return "0"
-    # 천 불 단위로 나누고 컴마 표시
     return f"{int(val / 1000):,}"
 
 def calc_growth(current, previous):
@@ -239,34 +234,37 @@ if not df.empty:
             with t_fin:
                 st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
-                if not is_ann.empty and not bs_ann.empty:
+                # 💡 핵심 수정: 필요한 컬럼이 실제로 있는지 확인하는 방어 로직 추가
+                req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
+                req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
+                
+                if not is_ann.empty and not bs_ann.empty and all(c in is_ann.columns for c in req_is_ann) and all(c in bs_ann.columns for c in req_bs_ann):
                     st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
-                    ann_df = is_ann[['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']].copy()
-                    ann_df = ann_df.merge(bs_ann[['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']], on='calendarYear', how='left')
+                    ann_df = is_ann[req_is_ann].copy()
+                    ann_df = ann_df.merge(bs_ann[req_bs_ann], on='calendarYear', how='left')
                     
-                    # 성장률 계산 (데이터가 최신순이므로 shift(-1)이 과거 데이터)
-                    ann_df['Rev Growth (YoY)'] = ann_df['revenue'].apply(lambda x: x) # 임시
+                    ann_df['Rev Growth (YoY)'] = ann_df['revenue'].apply(lambda x: x) 
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률', '영업이익성장률', '순이익성장률']):
                         ann_df[growth_col] = ann_df[col].shift(-1)
                         ann_df[growth_col] = ann_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
                     
-                    # 한글 컬럼명 변환
                     ko_cols = {'calendarYear':'연도', 'revenue':'매출액', 'operatingIncome':'영업이익', 'netIncome':'순이익', 'ebitda':'EBITDA', 'totalAssets':'총자산', 'totalLiabilities':'총부채', 'totalStockholdersEquity':'자본'}
                     ann_df = ann_df.rename(columns=ko_cols)
                     
-                    # 숫자 포맷팅
                     for col in ['매출액', '영업이익', '순이익', 'EBITDA', '총자산', '총부채', '자본']:
                         ann_df[col] = ann_df[col].apply(format_currency)
                     for col in ['매출성장률', '영업이익성장률', '순이익성장률']:
                         ann_df[col] = ann_df[col].apply(format_growth)
                         
                     st.dataframe(ann_df[['연도', '매출액', '매출성장률', '영업이익', '영업이익성장률', '순이익', '순이익성장률', 'EBITDA', '총자산', '총부채', '자본']].head(5), hide_index=True, use_container_width=True)
+                else:
+                    st.info("해당 기업의 연간 상세 재무제표가 아직 제공되지 않습니다.")
 
-                if not is_qtr.empty:
+                req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
+                if not is_qtr.empty and all(c in is_qtr.columns for c in req_is_qtr):
                     st.markdown("#### 📊 분기별 재무 및 성장률 (최근 3년)")
-                    qtr_df = is_qtr[['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']].copy()
+                    qtr_df = is_qtr[req_is_qtr].copy()
                     
-                    # 전년 동기 대비(QoQ YoY) 성장률: 4분기 전 데이터(shift(-4))와 비교
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']):
                         qtr_df[growth_col] = qtr_df[col].shift(-4)
                         qtr_df[growth_col] = qtr_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
@@ -280,17 +278,18 @@ if not df.empty:
                         qtr_df[col] = qtr_df[col].apply(format_growth)
                         
                     st.dataframe(qtr_df[['발표일', '분기', '매출액', '매출성장률(YoY)', '영업이익', '영업이익성장률(YoY)', '순이익', '순이익성장률(YoY)', 'EPS']].head(12), hide_index=True, use_container_width=True)
+                else:
+                    st.info("해당 기업의 분기 상세 재무제표가 아직 제공되지 않습니다.")
 
             with t_biz:
                 desc_en = info.get("description", "")
                 if desc_en:
                     st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
                     try:
-                        # 💡 deep-translator를 사용한 무료/무제한 한글 번역
                         with st.spinner("AI가 회사 개요를 번역 중입니다..."):
                             desc_ko = GoogleTranslator(source='en', target='ko').translate(desc_en)
                         st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
-                    except Exception as e:
+                    except:
                         st.error("번역 서버에 일시적으로 연결할 수 없습니다.")
                 else:
                     st.info("해당 기업의 개요 정보가 제공되지 않습니다.")
