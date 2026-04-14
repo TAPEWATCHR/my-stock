@@ -8,7 +8,7 @@ import os
 import altair as alt
 
 # Header 방식으로 인증 변경
-FMP_API_KEY = os.environ.get("FMP_API_KEY").strip()
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
 FMP_HEADERS = {"apikey": FMP_API_KEY}
 
 def init_db():
