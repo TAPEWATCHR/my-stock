@@ -241,24 +241,22 @@ if not df.empty:
                 for c in minervini:
                     st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
 
-            # --- 탭 3: 재무제표 (KeyError 방어 로직 포함) ---
+            # --- 탭 3: 재무제표 (KeyError 무적 방어 로직) ---
             with t_fin:
                 st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
-                # 💡 무적 방어 로직: FMP에서 누락한 컬럼을 0으로 강제 생성
-                if not is_ann.empty and not bs_ann.empty:
+                # 핵심 방어: 데이터가 비어있지 않고, 기준점(calendarYear)이 존재하는 경우에만 실행
+                if not is_ann.empty and not bs_ann.empty and 'calendarYear' in is_ann.columns and 'calendarYear' in bs_ann.columns:
                     st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
                     
                     req_is_ann = ['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']
-                    for col in req_is_ann:
-                        if col not in is_ann.columns: is_ann[col] = 0
-                        
                     req_bs_ann = ['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']
-                    for col in req_bs_ann:
-                        if col not in bs_ann.columns: bs_ann[col] = 0
+                    
+                    # reindex: 요청한 컬럼 중 없는 것은 자동으로 0으로 채워서 생성함 (에러 완벽 차단)
+                    is_safe = is_ann.reindex(columns=req_is_ann, fill_value=0)
+                    bs_safe = bs_ann.reindex(columns=req_bs_ann, fill_value=0)
 
-                    ann_df = is_ann[req_is_ann].copy()
-                    ann_df = ann_df.merge(bs_ann[req_bs_ann], on='calendarYear', how='left')
+                    ann_df = is_safe.merge(bs_safe, on='calendarYear', how='left')
                     
                     ann_df['Rev Growth (YoY)'] = ann_df['revenue'].apply(lambda x: x) 
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률', '영업이익성장률', '순이익성장률']):
@@ -275,16 +273,14 @@ if not df.empty:
                         
                     st.dataframe(ann_df[['연도', '매출액', '매출성장률', '영업이익', '영업이익성장률', '순이익', '순이익성장률', 'EBITDA', '총자산', '총부채', '자본']].head(5), hide_index=True, use_container_width=True)
                 else:
-                    st.info("해당 기업의 연간 상세 재무제표가 아직 제공되지 않습니다.")
+                    st.info("해당 기업의 연간 상세 재무제표가 아직 공시되지 않았거나, 제공되지 않습니다.")
 
-                if not is_qtr.empty:
+                # 분기 데이터 방어 로직 적용
+                if not is_qtr.empty and 'date' in is_qtr.columns:
                     st.markdown("#### 📊 분기별 재무 및 성장률 (최근 3년)")
                     
                     req_is_qtr = ['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']
-                    for col in req_is_qtr:
-                        if col not in is_qtr.columns: is_qtr[col] = 0
-                        
-                    qtr_df = is_qtr[req_is_qtr].copy()
+                    qtr_df = is_qtr.reindex(columns=req_is_qtr, fill_value=0)
                     
                     for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']):
                         qtr_df[growth_col] = qtr_df[col].shift(-4)
@@ -300,7 +296,7 @@ if not df.empty:
                         
                     st.dataframe(qtr_df[['발표일', '분기', '매출액', '매출성장률(YoY)', '영업이익', '영업이익성장률(YoY)', '순이익', '순이익성장률(YoY)', 'EPS']].head(12), hide_index=True, use_container_width=True)
                 else:
-                    st.info("해당 기업의 분기 상세 재무제표가 아직 제공되지 않습니다.")
+                    st.info("해당 기업의 분기 상세 재무제표가 아직 공시되지 않았거나, 제공되지 않습니다.")
 
             # --- 탭 4: 개요 번역 ---
             with t_biz:
