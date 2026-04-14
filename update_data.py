@@ -9,7 +9,7 @@ import requests
 import os
 
 # GitHub Secrets에서 키를 가져오거나, 로컬 기본값(현승님 키)을 사용합니다.
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
+FMP_API_KEY = os.environ.get("FMP_API_KEY").strip()
 
 # URL에 키를 노출하지 않고, 공식 문서 권장대로 Header에 숨겨서 전송합니다.
 FMP_HEADERS = {"apikey": FMP_API_KEY}
