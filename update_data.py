@@ -44,34 +44,36 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP 최신 Stable API를 사용하여 미국 주식 전체를 가져옵니다."""
+    """FMP v3 API를 사용하여 메타데이터(거래소, 타입)가 포함된 미국 주식 전체를 가져옵니다."""
     try:
-        # actively-trading-list 대신 거래소/타입 정보가 모두 포함된 stock-list 사용
-        url = "https://financialmodelingprep.com/stable/stock-list"
+        # 데이터가 잘려 나오는 stable 대신, 전체 정보가 담긴 v3 오리지널 주소 사용
+        url = "https://financialmodelingprep.com/api/v3/stock/list"
         res = requests.get(url, headers=FMP_HEADERS, timeout=10)
         res.raise_for_status()
         
         df = pd.DataFrame(res.json())
         
-        # FMP의 컬럼명 변경에 대비한 방어 로직 (KeyError 원천 차단)
-        exchange_col = 'exchangeShortName' if 'exchangeShortName' in df.columns else 'exchange'
-        
-        # 나스닥, 뉴욕거래소 종목이면서 ETF/Fund가 아닌 일반 주식(stock)만 필터링
+        # 나스닥, 뉴욕거래소 종목이면서 일반 주식(stock)만 완벽하게 필터링
         df_filtered = df[
-            (df[exchange_col].isin(['NASDAQ', 'NYSE'])) & 
-            (df.get('type', 'stock') == 'stock') # type 컬럼이 없으면 기본값 적용
+            (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
+            (df['type'] == 'stock')
         ].copy()
         
         df_filtered['symbol'] = df_filtered['symbol'].str.upper().str.replace('.', '-')
-        return df_filtered[['symbol', 'name']].copy()
+        
+        # FMP가 회사명 컬럼을 'name' 또는 'companyName'으로 줄 수 있으므로 통합 처리
+        name_col = 'companyName' if 'companyName' in df_filtered.columns else 'name'
+        
+        # 최종적으로 대시보드에서 쓸 수 있게 'name'으로 통일해서 반환
+        result_df = df_filtered[['symbol', name_col]].rename(columns={name_col: 'name'})
+        return result_df.copy()
         
     except Exception as e:
         print(f"🚨 FMP 종목 리스트 로드 실패: {e}")
-        # 에러 재발 시 디버깅을 위해 응답받은 컬럼 목록을 터미널에 출력합니다.
         if 'df' in locals():
             print(f"💡 현재 수신된 컬럼 목록: {df.columns.tolist()}")
         return pd.DataFrame()
-
+        
 def update_database():
     init_db()
     base_df = get_pure_exchange_stocks()
