@@ -42,7 +42,6 @@ def get_pure_exchange_stocks():
         df['symbol'] = df['symbol'].str.upper().str.replace('.', '-')
         
         name_col = 'companyName' if 'companyName' in df.columns else 'name'
-        # 💡 핵심: industry 컬럼을 살려서 가져옵니다.
         ind_col = 'industry' if 'industry' in df.columns else 'sector'
         
         result_df = df[['symbol', name_col, ind_col]].rename(columns={name_col: 'name', ind_col: 'industry'})
@@ -60,7 +59,6 @@ def update_database():
 
     conn = sqlite3.connect('ibd_system.db')
     
-    # DB에 산업군 업데이트 (새로운 종목이나 Unknown이었던 종목 갱신)
     for _, row in base_df.iterrows():
         conn.execute("INSERT OR IGNORE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)", (row['symbol'], row['industry'], ''))
         conn.execute("UPDATE company_profiles SET industry = ? WHERE symbol = ? AND (industry = 'Unknown' OR industry IS NULL)", (row['industry'], row['symbol']))
@@ -118,17 +116,19 @@ def update_database():
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
-    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 업데이트 진행 중...")
+    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 전체 종목 업데이트 진행 중...")
     
     smr_db = pd.read_sql("SELECT * FROM smr_cache", conn)
     smr_db['last_updated'] = pd.to_datetime(smr_db['last_updated'])
     df = pd.merge(df, smr_db, on='symbol', how='left')
 
     ninety_days_ago = datetime.now() - timedelta(days=90)
-    needs_smr_update = df[(df['rs_score'] >= 70) & ((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))]['symbol'].tolist()
+    
+    # 💡 핵심 변경: (df['rs_score'] >= 70) 조건을 삭제하여 모든 종목의 재무 데이터를 가져옵니다.
+    needs_smr_update = df[((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 갱신 중...")
+        print(f" > {len(needs_smr_update)}개 전체 종목 재무 데이터 갱신 중 (최초 실행 시 약 20분 소요)...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
                 url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4&apikey={FMP_API_KEY}"
@@ -147,12 +147,14 @@ def update_database():
                         conn.commit()
                         df.loc[df['symbol'] == ticker, ['smr_acc', 'is_prof']] = [smr_acc, is_prof]
             except: pass
-            time.sleep(0.25) # 💡 300회/분 제한을 넉넉히 피하기 위해 0.25초로 조정
+            time.sleep(0.25) # 300회/분 제한 준수
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
             
     df['smr_acc'] = df['smr_acc'].fillna(0)
     df['is_prof'] = df['is_prof'].fillna(0)
     df['smr_val'] = df['smr_acc'].rank(pct=True) + (df['is_prof'] * 0.5)
+    
+    # 데이터가 0인 종목이 많아 qcut 에러 방지를 위해 method='first' 유지
     df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
     ind_rs = df.groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
