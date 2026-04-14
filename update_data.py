@@ -9,7 +9,7 @@ import requests
 import os
 
 # GitHub Secrets에서 키를 가져오거나, 로컬 기본값(현승님 키)을 사용합니다.
-FMP_API_KEY = os.environ.get("FMP_API_KEY").strip()
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
 
 # URL에 키를 노출하지 않고, 공식 문서 권장대로 Header에 숨겨서 전송합니다.
 FMP_HEADERS = {"apikey": FMP_API_KEY}
@@ -44,17 +44,22 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP 최신 Stable API를 사용하여 거래 중인 미국 주식 전체를 가져옵니다."""
+    """FMP 최신 Stable API를 사용하여 미국 주식 전체를 가져옵니다."""
     try:
-        # v3 대신 stable/actively-trading-list 사용
-        url = "https://financialmodelingprep.com/stable/actively-trading-list"
+        # actively-trading-list 대신 거래소/타입 정보가 모두 포함된 stock-list 사용
+        url = "https://financialmodelingprep.com/stable/stock-list"
         res = requests.get(url, headers=FMP_HEADERS, timeout=10)
         res.raise_for_status()
         
         df = pd.DataFrame(res.json())
+        
+        # FMP의 컬럼명 변경에 대비한 방어 로직 (KeyError 원천 차단)
+        exchange_col = 'exchangeShortName' if 'exchangeShortName' in df.columns else 'exchange'
+        
+        # 나스닥, 뉴욕거래소 종목이면서 ETF/Fund가 아닌 일반 주식(stock)만 필터링
         df_filtered = df[
-            (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
-            (df['type'] == 'stock')
+            (df[exchange_col].isin(['NASDAQ', 'NYSE'])) & 
+            (df.get('type', 'stock') == 'stock') # type 컬럼이 없으면 기본값 적용
         ].copy()
         
         df_filtered['symbol'] = df_filtered['symbol'].str.upper().str.replace('.', '-')
@@ -62,6 +67,9 @@ def get_pure_exchange_stocks():
         
     except Exception as e:
         print(f"🚨 FMP 종목 리스트 로드 실패: {e}")
+        # 에러 재발 시 디버깅을 위해 응답받은 컬럼 목록을 터미널에 출력합니다.
+        if 'df' in locals():
+            print(f"💡 현재 수신된 컬럼 목록: {df.columns.tolist()}")
         return pd.DataFrame()
 
 def update_database():
@@ -181,7 +189,7 @@ def update_database():
             except Exception as e:
                 pass
             
-            time.sleep(0.2)
+            time.sleep(0.2) # 호출 한도 제한을 위한 딜레이
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 갱신 완료")
             
     df['smr_acc'] = df['smr_acc'].fillna(0)
