@@ -107,7 +107,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 if not FMP_API_KEY:
-    st.error("🚨 FMP_API_KEY 환경 변수가 설정되지 않았습니다. 대시보드 기능을 온전히 사용할 수 없습니다.")
+    st.error("🚨 FMP_API_KEY가 설정되지 않아 대시보드의 상세 기업 정보와 재무제표 기능을 불러올 수 없습니다.")
 
 init_db()
 df = get_data()
