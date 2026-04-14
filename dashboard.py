@@ -7,9 +7,7 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 
-# Header 방식으로 인증 변경
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
-FMP_HEADERS = {"apikey": FMP_API_KEY}
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -60,10 +58,10 @@ def get_favorites():
 
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
+    if not FMP_API_KEY: return pd.DataFrame(), {}
     try:
-        # 최신 Stable 엔드포인트 및 Header 사용
-        url_inc = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=8"
-        i_res = requests.get(url_inc, headers=FMP_HEADERS).json()
+        url_inc = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
+        i_res = requests.get(url_inc).json()
         
         conn = sqlite3.connect('ibd_system.db')
         p_df = pd.read_sql(f"SELECT * FROM company_profiles WHERE symbol='{ticker}'", conn)
@@ -71,8 +69,8 @@ def get_detailed_info(ticker):
         if not p_df.empty:
             info = {"description": p_df.iloc[0]['description'], "industry": p_df.iloc[0]['industry']}
         else:
-            url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}"
-            p_res = requests.get(url_prof, headers=FMP_HEADERS).json()
+            url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={FMP_API_KEY}"
+            p_res = requests.get(url_prof).json()
             info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
             if info: 
                 conn.execute("INSERT OR REPLACE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)",
@@ -107,6 +105,9 @@ st.markdown("""
     .check-fail { border-left-color: #ef4444; }
 </style>
 """, unsafe_allow_html=True)
+
+if not FMP_API_KEY:
+    st.error("🚨 FMP_API_KEY 환경 변수가 설정되지 않았습니다. 대시보드 기능을 온전히 사용할 수 없습니다.")
 
 init_db()
 df = get_data()
@@ -225,15 +226,12 @@ if not df.empty:
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
                     rs_hist_df['rs_score'] = rs_hist_df['rs_score'].clip(1, 100)
                     rs_chart = alt.Chart(rs_hist_df).mark_line(
-                        color="#64ffda",
-                        strokeWidth=2
+                        color="#64ffda", strokeWidth=2
                     ).encode(
                         x=alt.X('date:T', title='날짜'),
                         y=alt.Y('rs_score:Q', title='RS', scale=alt.Scale(domain=[1, 100]))
                     ).properties(height=240)
                     st.altair_chart(rs_chart, use_container_width=True)
-                else:
-                    st.info("RS 점수 히스토리가 아직 충분하지 않습니다. update_data.py 실행 후 누적됩니다.")
 
             with t_check:
                 st.markdown("#### 미너비니 & 캔슬림 혼합 체크리스트")
@@ -259,7 +257,6 @@ if not df.empty:
             with t_biz:
                 desc = info.get("description", "해당 기업의 개요 정보가 DB에 없습니다.")
                 st.markdown(f'<div class="overview-panel"><strong>[영문 원문]</strong><br><br>{desc}</div>', unsafe_allow_html=True)
-                st.caption("💡 팁: 한글 번역은 API 호출 비용 문제로 원문이 우선 제공됩니다. 추후 외부 API 연동 시 이 영역을 수정하시면 됩니다.")
                 
         else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 else:
