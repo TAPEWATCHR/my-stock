@@ -50,7 +50,6 @@ def get_favorites():
     conn.close()
     return favs
 
-# 💡 핵심: 함수 이름을 변경하여 Streamlit Cloud의 꼬인 캐시를 강제로 초기화시킵니다.
 @st.cache_data(ttl=3600)
 def get_fin_data(ticker):
     if not FMP_API_KEY: return [], [], [], {}
@@ -71,7 +70,6 @@ def get_fin_data(ticker):
         return is_ann, bs_ann, is_qtr, info
     except: return [], [], [], {}
 
-# 어떤 문자가 들어와도 다운되지 않도록 포맷팅 함수 강화
 def format_currency(val):
     try:
         val = float(val)
@@ -91,9 +89,12 @@ def format_growth(val):
     return f"{val:.1f}%"
 
 def format_adv(val):
-    if val >= 1e9: return f"${val/1e9:.2f}B"
-    elif val >= 1e6: return f"${val/1e6:.2f}M"
-    return f"${val:,.0f}"
+    try:
+        val = float(val)
+        if val >= 1e9: return f"${val/1e9:.2f}B"
+        elif val >= 1e6: return f"${val/1e6:.2f}M"
+        return f"${val:,.0f}"
+    except: return "$0"
 
 # ================= UI 디자인 =================
 st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
@@ -121,6 +122,13 @@ df = get_data()
 fav_list = get_favorites()
 
 if not df.empty:
+    # 💡 1차 무적 방어: 구버전 DB(컬럼 누락)를 읽더라도 무조건 컬럼을 생성하여 채워줌
+    if 'adv_50' not in df.columns: df['adv_50'] = 0.0
+    if 'industry_rs_score' not in df.columns: df['industry_rs_score'] = 0
+    if 'ad_grade' not in df.columns: df['ad_grade'] = 'C'
+    if 'smr_grade' not in df.columns: df['smr_grade'] = 'C'
+    if 'industry' not in df.columns: df['industry'] = 'Unknown'
+
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
@@ -185,10 +193,11 @@ if not df.empty:
     with col_r:
         if len(sel_row.selection.rows) > 0:
             target = f_df.iloc[sel_row.selection.rows[0]]
-            ticker = target['symbol']
+            if isinstance(target, pd.DataFrame): target = target.iloc[0] # 행이 여러 개로 꼬였을 경우 방어
+            ticker = target.get('symbol', 'UNKNOWN')
             
             c1, c2 = st.columns([4, 1])
-            with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target['industry']}</span>", unsafe_allow_html=True)
+            with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
                 st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
@@ -197,9 +206,7 @@ if not df.empty:
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
             
-            # API에서 원시 리스트 반환
             is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
-            
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
             with t_chart:
@@ -223,25 +230,33 @@ if not df.empty:
                     st.altair_chart(rs_chart, use_container_width=True)
 
             with t_check:
+                # 💡 2차 무적 방어: 데이터가 비어있어도 get으로 꺼내서 에러 원천 차단
+                price_val = float(target.get('price', 0))
+                rs_val = int(target.get('rs_score', 0))
+                smr_val = str(target.get('smr_grade', 'C'))
+                ad_val = str(target.get('ad_grade', 'C'))
+                adv_val = float(target.get('adv_50', 0))
+                ind_rs_val = int(target.get('industry_rs_score', 0))
+
                 st.markdown("#### 캔슬림 (CAN SLIM) 전략")
                 canslim = [
-                    {"name": "C (현재 실적): SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
-                    {"name": "A (연간 실적): SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
-                    {"name": "N (신제품/신고가): RS 점수 80 이상", "pass": target['rs_score'] >= 80},
-                    {"name": "S (수요와 공급): 거래대금 $20M 이상", "pass": target['adv_50'] >= 20000000},
-                    {"name": "L (주도주): 산업군 RS 점수 70 이상", "pass": target['industry_rs_score'] >= 70},
-                    {"name": "I (기관 수급): AD 수급 등급 A 또는 B", "pass": target['ad_grade'] in ['A', 'B']},
+                    {"name": "C (현재 실적): SMR 등급 A 또는 B", "pass": smr_val in ['A', 'B']},
+                    {"name": "A (연간 실적): SMR 등급 A 또는 B", "pass": smr_val in ['A', 'B']},
+                    {"name": "N (신제품/신고가): RS 점수 80 이상", "pass": rs_val >= 80},
+                    {"name": "S (수요와 공급): 거래대금 $20M 이상", "pass": adv_val >= 20000000},
+                    {"name": "L (주도주): 산업군 RS 점수 70 이상", "pass": ind_rs_val >= 70},
+                    {"name": "I (기관 수급): AD 수급 등급 A 또는 B", "pass": ad_val in ['A', 'B']},
                 ]
                 for c in canslim:
                     st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
 
                 st.markdown("#### 마크 미너비니 (Minervini VCP) 전략")
                 minervini = [
-                    {"name": "최소 주가: $15 이상 (기관 진입 가능)", "pass": target['price'] >= 15},
-                    {"name": "주도주 모멘텀: RS 점수 70 이상", "pass": target['rs_score'] >= 70},
-                    {"name": "펀더멘탈: SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
-                    {"name": "매집 흔적: AD 수급 등급 A, B, C", "pass": target['ad_grade'] in ['A', 'B', 'C']},
-                    {"name": "유동성: 거래대금 $10M 이상", "pass": target['adv_50'] >= 10000000}
+                    {"name": "최소 주가: $15 이상 (기관 진입 가능)", "pass": price_val >= 15},
+                    {"name": "주도주 모멘텀: RS 점수 70 이상", "pass": rs_val >= 70},
+                    {"name": "펀더멘탈: SMR 등급 A 또는 B", "pass": smr_val in ['A', 'B']},
+                    {"name": "매집 흔적: AD 수급 등급 A, B, C", "pass": ad_val in ['A', 'B', 'C']},
+                    {"name": "유동성: 거래대금 $10M 이상", "pass": adv_val >= 10000000}
                 ]
                 for c in minervini:
                     st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
@@ -249,7 +264,6 @@ if not df.empty:
             with t_fin:
                 st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
-                # 💡 안전한 파서 함수: 엉터리 데이터가 오면 에러 대신 안전하게 0으로 채움
                 def safe_parse(data_list, keys, required_key):
                     if not isinstance(data_list, list) or len(data_list) == 0: return pd.DataFrame()
                     if required_key not in data_list[0]: return pd.DataFrame()
