@@ -6,9 +6,13 @@ import time
 import numpy as np
 from datetime import datetime, timedelta
 import requests
+import os
 
-# FMP API 키 세팅
-FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
+# GitHub Secrets에서 키를 가져오거나, 로컬 기본값(현승님 키)을 사용합니다.
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
+
+# URL에 키를 노출하지 않고, 공식 문서 권장대로 Header에 숨겨서 전송합니다.
+FMP_HEADERS = {"apikey": FMP_API_KEY}
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -40,14 +44,14 @@ def init_db():
     conn.close()
 
 def get_pure_exchange_stocks():
-    """FMP API를 사용하여 Nasdaq, NYSE 상장 미국 일반 주식 전체를 필터링합니다."""
+    """FMP 최신 Stable API를 사용하여 거래 중인 미국 주식 전체를 가져옵니다."""
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=10)
+        # v3 대신 stable/actively-trading-list 사용
+        url = "https://financialmodelingprep.com/stable/actively-trading-list"
+        res = requests.get(url, headers=FMP_HEADERS, timeout=10)
         res.raise_for_status()
         
         df = pd.DataFrame(res.json())
-        # 나스닥, 뉴욕거래소 상장 '일반 주식' 전체 추출 (약 4500~5000개)
         df_filtered = df[
             (df['exchangeShortName'].isin(['NASDAQ', 'NYSE'])) & 
             (df['type'] == 'stock')
@@ -75,7 +79,7 @@ def update_database():
     snapshot_rows = []
     
     print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
-    # 참고: 가격 데이터는 yfinance 대량 다운로드가 압도적으로 빠르므로 yfinance 유지
+    
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
@@ -93,8 +97,6 @@ def update_database():
                     hist = price_data[ticker].copy()
                 
                 hist = hist.dropna(subset=['Close', 'Volume'])
-                
-                # 최소 데이터 기준 65일
                 if len(hist) < 65: continue
 
                 p = hist['Close']
@@ -102,10 +104,8 @@ def update_database():
                 
                 current_p = float(p.iloc[-1])
                 rs_raw = (current_p / p.iloc[-21] * 2) + (current_p / p.iloc[-63] * 2) if len(hist) >= 63 else 0
-                
                 adv_50 = float((v.tail(50).mean() * current_p))
 
-                # AD 수급 로직
                 v_mean = v.rolling(50).mean().bfill()
                 pct_change = p.pct_change().fillna(0) * 100
                 ad_raw = np.where(v_mean > 0, (v / v_mean) * pct_change, 0)
@@ -155,17 +155,16 @@ def update_database():
     ]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 업데이트 중 (FMP API 사용)...")
+        print(f" > {len(needs_smr_update)}개 주도주 재무 데이터 업데이트 중...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                # [핵심 변경점] yfinance 대신 FMP의 income-statement API 사용
-                url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=4&apikey={FMP_API_KEY}"
-                res = requests.get(url, timeout=5)
+                # v3 대신 stable/income-statement 사용 및 Header 인증
+                url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4"
+                res = requests.get(url, headers=FMP_HEADERS, timeout=5)
                 
                 if res.status_code == 200:
                     qf = res.json()
                     if len(qf) >= 3:
-                        # 인덱스 0이 가장 최근 분기입니다.
                         rev = [item.get('revenue', 0) for item in qf]
                         net = [item.get('netIncome', 0) for item in qf]
                         
@@ -182,7 +181,6 @@ def update_database():
             except Exception as e:
                 pass
             
-            # FMP Starter 플랜의 분당 300회(초당 5회) 호출 제한을 안전하게 지키기 위한 딜레이
             time.sleep(0.2)
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 갱신 완료")
             
@@ -198,13 +196,11 @@ def update_database():
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
 
-    # RS 이력 저장 (차트용)
     today_str = datetime.now().strftime('%Y-%m-%d')
     rs_history_df = final_df[['symbol', 'rs_score']].copy()
     rs_history_df['date'] = today_str
     rs_history_df[['symbol', 'date', 'rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
 
-    # 원천 스냅샷 저장
     if snapshot_rows:
         snapshot_df = pd.DataFrame(snapshot_rows)
         snapshot_df = snapshot_df.merge(
@@ -215,7 +211,7 @@ def update_database():
         snapshot_df.to_sql('security_snapshot', conn, if_exists='replace', index=False)
     
     conn.close()
-    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 미국 주식 저장 완료.")
+    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 주식 저장 완료.")
 
 if __name__ == "__main__":
     update_database()
