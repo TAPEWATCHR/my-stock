@@ -7,7 +7,9 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 
-FMP_API_KEY = "1kJBflGjsp5fCgbancejhI5bN5iavEJF"
+# Header 방식으로 인증 변경
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "1kJBflGjsp5fCgbancejhI5bN5iavEJF").strip()
+FMP_HEADERS = {"apikey": FMP_API_KEY}
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -27,14 +29,12 @@ def get_data():
     return df
 
 def get_rs_history(ticker):
-    if not os.path.exists('ibd_system.db'):
-        return pd.DataFrame()
+    if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
         hist = pd.read_sql(
             "SELECT date, rs_score FROM rs_history WHERE symbol = ? ORDER BY date ASC",
-            conn,
-            params=(ticker,)
+            conn, params=(ticker,)
         )
     except Exception:
         hist = pd.DataFrame()
@@ -61,7 +61,9 @@ def get_favorites():
 @st.cache_data(ttl=3600)
 def get_detailed_info(ticker):
     try:
-        i_res = requests.get(f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}").json()
+        # 최신 Stable 엔드포인트 및 Header 사용
+        url_inc = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=8"
+        i_res = requests.get(url_inc, headers=FMP_HEADERS).json()
         
         conn = sqlite3.connect('ibd_system.db')
         p_df = pd.read_sql(f"SELECT * FROM company_profiles WHERE symbol='{ticker}'", conn)
@@ -69,7 +71,8 @@ def get_detailed_info(ticker):
         if not p_df.empty:
             info = {"description": p_df.iloc[0]['description'], "industry": p_df.iloc[0]['industry']}
         else:
-            p_res = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}").json()
+            url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}"
+            p_res = requests.get(url_prof, headers=FMP_HEADERS).json()
             info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
             if info: 
                 conn.execute("INSERT OR REPLACE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)",
@@ -256,7 +259,7 @@ if not df.empty:
             with t_biz:
                 desc = info.get("description", "해당 기업의 개요 정보가 DB에 없습니다.")
                 st.markdown(f'<div class="overview-panel"><strong>[영문 원문]</strong><br><br>{desc}</div>', unsafe_allow_html=True)
-                st.caption("💡 팁: 한글 번역은 API 호출 비용 문제로 원문이 우선 제공됩니다. 추후 DeepL 등 외부 API 연동 시 이 영역을 수정하시면 됩니다.")
+                st.caption("💡 팁: 한글 번역은 API 호출 비용 문제로 원문이 우선 제공됩니다. 추후 외부 API 연동 시 이 영역을 수정하시면 됩니다.")
                 
         else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 else:
