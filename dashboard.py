@@ -6,17 +6,13 @@ import requests
 import streamlit.components.v1 as components
 import os
 import altair as alt
+from deep_translator import GoogleTranslator
 
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
     conn.execute("CREATE TABLE IF NOT EXISTS favorites (symbol TEXT PRIMARY KEY)")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS company_profiles (
-            symbol TEXT PRIMARY KEY, industry TEXT, description TEXT
-        )
-    """)
     conn.close()
 
 def get_data():
@@ -30,12 +26,8 @@ def get_rs_history(ticker):
     if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
-        hist = pd.read_sql(
-            "SELECT date, rs_score FROM rs_history WHERE symbol = ? ORDER BY date ASC",
-            conn, params=(ticker,)
-        )
-    except Exception:
-        hist = pd.DataFrame()
+        hist = pd.read_sql("SELECT date, rs_score FROM rs_history WHERE symbol = ? ORDER BY date ASC", conn, params=(ticker,))
+    except: hist = pd.DataFrame()
     conn.close()
     return hist
 
@@ -43,10 +35,8 @@ def toggle_favorite(symbol):
     conn = sqlite3.connect('ibd_system.db')
     c = conn.cursor()
     c.execute("SELECT symbol FROM favorites WHERE symbol=?", (symbol,))
-    if c.fetchone():
-        c.execute("DELETE FROM favorites WHERE symbol=?", (symbol,))
-    else:
-        c.execute("INSERT INTO favorites (symbol) VALUES (?)", (symbol,))
+    if c.fetchone(): c.execute("DELETE FROM favorites WHERE symbol=?", (symbol,))
+    else: c.execute("INSERT INTO favorites (symbol) VALUES (?)", (symbol,))
     conn.commit()
     conn.close()
 
@@ -57,28 +47,41 @@ def get_favorites():
     return favs
 
 @st.cache_data(ttl=3600)
-def get_detailed_info(ticker):
-    if not FMP_API_KEY: return pd.DataFrame(), {}
+def fetch_financials(ticker):
+    if not FMP_API_KEY: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
     try:
-        url_inc = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
-        i_res = requests.get(url_inc).json()
+        # 연간 손익계산서 (5년)
+        url_is_ann = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=annual&limit=5&apikey={FMP_API_KEY}"
+        is_ann = requests.get(url_is_ann).json()
         
-        conn = sqlite3.connect('ibd_system.db')
-        p_df = pd.read_sql(f"SELECT * FROM company_profiles WHERE symbol='{ticker}'", conn)
+        # 연간 대차대조표 (5년)
+        url_bs_ann = f"https://financialmodelingprep.com/stable/balance-sheet-statement?symbol={ticker}&period=annual&limit=5&apikey={FMP_API_KEY}"
+        bs_ann = requests.get(url_bs_ann).json()
         
-        if not p_df.empty:
-            info = {"description": p_df.iloc[0]['description'], "industry": p_df.iloc[0]['industry']}
-        else:
-            url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={FMP_API_KEY}"
-            p_res = requests.get(url_prof).json()
-            info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
-            if info: 
-                conn.execute("INSERT OR REPLACE INTO company_profiles (symbol, industry, description) VALUES (?, ?, ?)",
-                             (ticker, info.get('industry'), info.get('description')))
-                conn.commit()
-        conn.close()
-        return pd.DataFrame(i_res), info
-    except: return pd.DataFrame(), {}
+        # 분기 손익계산서 (3년 = 12분기)
+        url_is_qtr = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=12&apikey={FMP_API_KEY}"
+        is_qtr = requests.get(url_is_qtr).json()
+        
+        # 기업 개요
+        url_prof = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={FMP_API_KEY}"
+        p_res = requests.get(url_prof).json()
+        info = p_res[0] if p_res and not isinstance(p_res, dict) else {}
+        
+        return pd.DataFrame(is_ann), pd.DataFrame(bs_ann), pd.DataFrame(is_qtr), info
+    except: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+
+def format_currency(val):
+    if pd.isna(val) or val == 0: return "0"
+    # 천 불 단위로 나누고 컴마 표시
+    return f"{int(val / 1000):,}"
+
+def calc_growth(current, previous):
+    if pd.isna(current) or pd.isna(previous) or previous == 0: return None
+    return ((current - previous) / abs(previous)) * 100
+
+def format_growth(val):
+    if pd.isna(val): return "-"
+    return f"{val:.1f}%"
 
 def format_adv(val):
     if val >= 1e9: return f"${val/1e9:.2f}B"
@@ -92,22 +95,18 @@ st.markdown("""
     .block-container p, .block-container span, .block-container h1, .block-container h2, 
     .block-container h3, .block-container h4, .block-container label { color: #FFFFFF !important; }
     [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
-    [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { 
-        color: #1E293B !important; font-size: 13px;
-    }
-    .stButton > button { 
-        background-color: #FFFFFF !important; color: #1E293B !important; 
-        border: 1px solid #CBD5E1 !important; font-weight: bold; 
-    }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { color: #1E293B !important; font-size: 13px; }
+    .stButton > button { background-color: #FFFFFF !important; color: #1E293B !important; border: 1px solid #CBD5E1 !important; font-weight: bold; }
     .overview-panel { background: #2A3143; padding: 1.2rem; border-radius: 8px; color: #FFFFFF !important; line-height: 1.6;}
-    .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6;}
+    .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6; color: #D1D5DB !important; }
     .check-pass { border-left-color: #10b981; }
     .check-fail { border-left-color: #ef4444; }
+    .fav-btn button { color: #D1D5DB !important; border-color: #D1D5DB !important; background-color: transparent !important; }
 </style>
 """, unsafe_allow_html=True)
 
 if not FMP_API_KEY:
-    st.error("🚨 FMP_API_KEY가 설정되지 않아 대시보드의 상세 기업 정보와 재무제표 기능을 불러올 수 없습니다.")
+    st.error("🚨 FMP_API_KEY가 설정되지 않아 대시보드를 불러올 수 없습니다.")
 
 init_db()
 df = get_data()
@@ -117,8 +116,9 @@ if not df.empty:
     with st.sidebar:
         st.header("🎛️ Terminal Control")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
-        rs_m = st.slider("최소 RS 점수", 1, 99, 80)
         min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
+        rs_m = st.slider("최소 RS 점수", 1, 99, 80)
+        ind_rs_m = st.slider("최소 산업군 RS 점수", 1, 99, 50)
         
         with st.expander("🏭 산업군 필터"):
             all_inds = sorted(df['industry'].unique().tolist())
@@ -156,23 +156,20 @@ if not df.empty:
 
         smr_sel = btn_filter("SMR 등급", "smr_sel")
         ad_sel = btn_filter("AD 수급 등급", "ad_sel")
-        
         show_fav_only = st.checkbox("⭐ 관심종목만 보기", value=False)
 
     mask = (df['price'] >= min_p) & (df['rs_score'] >= rs_m) & \
-           (df['adv_50'] >= min_adv_m * 1000000) & \
+           (df['adv_50'] >= min_adv_m * 1000000) & (df['industry_rs_score'] >= ind_rs_m) & \
            (df['smr_grade'].isin(smr_sel)) & (df['ad_grade'].isin(ad_sel)) & \
            (df['industry'].isin(st.session_state.ind_sel))
     
     f_df = df[mask].sort_values('rs_score', ascending=False).copy()
-    
-    if show_fav_only:
-        f_df = f_df[f_df['symbol'].isin(fav_list)]
+    if show_fav_only: f_df = f_df[f_df['symbol'].isin(fav_list)]
 
-    display_df = f_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
+    display_df = f_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
-    col_l, col_r = st.columns([4, 4])
+    col_l, col_r = st.columns([4, 5])
     with col_l:
         st.subheader(f"Leaders List ({len(display_df)})")
         sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
@@ -182,16 +179,18 @@ if not df.empty:
             target = f_df.iloc[sel_row.selection.rows[0]]
             ticker = target['symbol']
             
-            c1, c2 = st.columns([3, 1])
-            with c1: st.markdown(f"## {ticker} ({target['industry']})")
+            c1, c2 = st.columns([4, 1])
+            with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target['industry']}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
-                if st.button("⭐ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
+                st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
+                if st.button("🤍 관심해제" if is_fav else "🤍 관심저장", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
             
-            q_inc, info = get_detailed_info(ticker)
-            t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무", "🏢 개요"])
+            is_ann, bs_ann, is_qtr, info = fetch_financials(ticker)
+            t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
             with t_chart:
                 tv_widget = f"""
@@ -199,64 +198,102 @@ if not df.empty:
                   <div id="tradingview_{ticker}" style="height: calc(100% - 32px); width: 100%;"></div>
                   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
                   <script type="text/javascript">
-                  new TradingView.widget({{
-                  "autosize": true,
-                  "symbol": "{ticker}",
-                  "interval": "D",
-                  "timezone": "Etc/UTC",
-                  "theme": "dark",
-                  "style": "1",
-                  "locale": "kr",
-                  "enable_publishing": false,
-                  "backgroundColor": "#161C27",
-                  "gridColor": "#2A3143",
-                  "hide_top_toolbar": false,
-                  "save_image": false,
-                  "container_id": "tradingview_{ticker}"
-                }});
+                  new TradingView.widget({{"autosize": true, "symbol": "{ticker}", "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "kr", "enable_publishing": false, "backgroundColor": "#161C27", "gridColor": "#2A3143", "hide_top_toolbar": false, "save_image": false, "container_id": "tradingview_{ticker}"}});
                   </script>
                 </div>
                 """
                 components.html(tv_widget, height=500)
 
-                st.markdown("#### 📈 RS 점수 추세")
                 rs_hist_df = get_rs_history(ticker)
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
-                    rs_hist_df = rs_hist_df.copy()
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
-                    rs_hist_df['rs_score'] = rs_hist_df['rs_score'].clip(1, 100)
-                    rs_chart = alt.Chart(rs_hist_df).mark_line(
-                        color="#64ffda", strokeWidth=2
-                    ).encode(
-                        x=alt.X('date:T', title='날짜'),
-                        y=alt.Y('rs_score:Q', title='RS', scale=alt.Scale(domain=[1, 100]))
+                    rs_chart = alt.Chart(rs_hist_df).mark_line(color="#64ffda", strokeWidth=2).encode(
+                        x=alt.X('date:T', title='날짜'), y=alt.Y('rs_score:Q', title='RS 점수', scale=alt.Scale(domain=[1, 100]))
                     ).properties(height=240)
                     st.altair_chart(rs_chart, use_container_width=True)
 
             with t_check:
-                st.markdown("#### 미너비니 & 캔슬림 혼합 체크리스트")
-                checks = [
-                    {"name": "현재가 $15 이상 (기관 투자 적합성)", "pass": target['price'] >= 15},
-                    {"name": "RS Score 80 이상 (시장의 주도주)", "pass": target['rs_score'] >= 80},
-                    {"name": "SMR Grade A or B (강력한 펀더멘탈/성장성)", "pass": target['smr_grade'] in ['A', 'B']},
-                    {"name": "AD Grade A or B (기관의 강한 매집 흔적)", "pass": target['ad_grade'] in ['A', 'B']},
-                    {"name": "최소 거래대금 $20M 이상 (유동성 확보)", "pass": target['adv_50'] >= 20000000}
+                st.markdown("#### 캔슬림 (CAN SLIM) 전략")
+                canslim = [
+                    {"name": "C (현재 실적): SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
+                    {"name": "A (연간 실적): SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
+                    {"name": "N (신제품/신고가): RS 점수 80 이상", "pass": target['rs_score'] >= 80},
+                    {"name": "S (수요와 공급): 거래대금 $20M 이상", "pass": target['adv_50'] >= 20000000},
+                    {"name": "L (주도주): 산업군 RS 점수 70 이상", "pass": target['industry_rs_score'] >= 70},
+                    {"name": "I (기관 수급): AD 수급 등급 A 또는 B", "pass": target['ad_grade'] in ['A', 'B']},
                 ]
-                
-                for c in checks:
-                    status_class = "check-pass" if c["pass"] else "check-fail"
-                    icon = "✅" if c["pass"] else "❌"
-                    st.markdown(f'<div class="check-box {status_class}">{icon} {c["name"]}</div>', unsafe_allow_html=True)
+                for c in canslim:
+                    st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
+
+                st.markdown("#### 마크 미너비니 (Minervini VCP) 전략")
+                minervini = [
+                    {"name": "최소 주가: $15 이상 (기관 진입 가능)", "pass": target['price'] >= 15},
+                    {"name": "주도주 모멘텀: RS 점수 70 이상", "pass": target['rs_score'] >= 70},
+                    {"name": "펀더멘탈: SMR 등급 A 또는 B", "pass": target['smr_grade'] in ['A', 'B']},
+                    {"name": "매집 흔적: AD 수급 등급 A, B, C", "pass": target['ad_grade'] in ['A', 'B', 'C']},
+                    {"name": "유동성: 거래대금 $10M 이상", "pass": target['adv_50'] >= 10000000}
+                ]
+                for c in minervini:
+                    st.markdown(f'<div class="check-box {"check-pass" if c["pass"] else "check-fail"}">{"✅" if c["pass"] else "❌"} {c["name"]}</div>', unsafe_allow_html=True)
 
             with t_fin:
-                if not q_inc.empty: 
-                    show_fin = q_inc[['date','revenue','operatingIncome','netIncome','eps']].head(4)
-                    st.dataframe(show_fin, use_container_width=True)
-                else: st.info("상세 재무 정보를 불러오고 있습니다. (API 확인 필요)")
+                st.caption("단위: 천불 ($1,000) / 성장률: %")
                 
+                if not is_ann.empty and not bs_ann.empty:
+                    st.markdown("#### 📅 연간 재무 및 성장률 (최근 5년)")
+                    ann_df = is_ann[['calendarYear', 'revenue', 'operatingIncome', 'netIncome', 'ebitda']].copy()
+                    ann_df = ann_df.merge(bs_ann[['calendarYear', 'totalAssets', 'totalLiabilities', 'totalStockholdersEquity']], on='calendarYear', how='left')
+                    
+                    # 성장률 계산 (데이터가 최신순이므로 shift(-1)이 과거 데이터)
+                    ann_df['Rev Growth (YoY)'] = ann_df['revenue'].apply(lambda x: x) # 임시
+                    for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률', '영업이익성장률', '순이익성장률']):
+                        ann_df[growth_col] = ann_df[col].shift(-1)
+                        ann_df[growth_col] = ann_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
+                    
+                    # 한글 컬럼명 변환
+                    ko_cols = {'calendarYear':'연도', 'revenue':'매출액', 'operatingIncome':'영업이익', 'netIncome':'순이익', 'ebitda':'EBITDA', 'totalAssets':'총자산', 'totalLiabilities':'총부채', 'totalStockholdersEquity':'자본'}
+                    ann_df = ann_df.rename(columns=ko_cols)
+                    
+                    # 숫자 포맷팅
+                    for col in ['매출액', '영업이익', '순이익', 'EBITDA', '총자산', '총부채', '자본']:
+                        ann_df[col] = ann_df[col].apply(format_currency)
+                    for col in ['매출성장률', '영업이익성장률', '순이익성장률']:
+                        ann_df[col] = ann_df[col].apply(format_growth)
+                        
+                    st.dataframe(ann_df[['연도', '매출액', '매출성장률', '영업이익', '영업이익성장률', '순이익', '순이익성장률', 'EBITDA', '총자산', '총부채', '자본']].head(5), hide_index=True, use_container_width=True)
+
+                if not is_qtr.empty:
+                    st.markdown("#### 📊 분기별 재무 및 성장률 (최근 3년)")
+                    qtr_df = is_qtr[['date', 'period', 'revenue', 'operatingIncome', 'netIncome', 'eps']].copy()
+                    
+                    # 전년 동기 대비(QoQ YoY) 성장률: 4분기 전 데이터(shift(-4))와 비교
+                    for col, growth_col in zip(['revenue', 'operatingIncome', 'netIncome'], ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']):
+                        qtr_df[growth_col] = qtr_df[col].shift(-4)
+                        qtr_df[growth_col] = qtr_df.apply(lambda row: calc_growth(row[col], row[growth_col]), axis=1)
+                    
+                    ko_qtr = {'date':'발표일', 'period':'분기', 'revenue':'매출액', 'operatingIncome':'영업이익', 'netIncome':'순이익', 'eps':'EPS'}
+                    qtr_df = qtr_df.rename(columns=ko_qtr)
+                    
+                    for col in ['매출액', '영업이익', '순이익']:
+                        qtr_df[col] = qtr_df[col].apply(format_currency)
+                    for col in ['매출성장률(YoY)', '영업이익성장률(YoY)', '순이익성장률(YoY)']:
+                        qtr_df[col] = qtr_df[col].apply(format_growth)
+                        
+                    st.dataframe(qtr_df[['발표일', '분기', '매출액', '매출성장률(YoY)', '영업이익', '영업이익성장률(YoY)', '순이익', '순이익성장률(YoY)', 'EPS']].head(12), hide_index=True, use_container_width=True)
+
             with t_biz:
-                desc = info.get("description", "해당 기업의 개요 정보가 DB에 없습니다.")
-                st.markdown(f'<div class="overview-panel"><strong>[영문 원문]</strong><br><br>{desc}</div>', unsafe_allow_html=True)
+                desc_en = info.get("description", "")
+                if desc_en:
+                    st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
+                    try:
+                        # 💡 deep-translator를 사용한 무료/무제한 한글 번역
+                        with st.spinner("AI가 회사 개요를 번역 중입니다..."):
+                            desc_ko = GoogleTranslator(source='en', target='ko').translate(desc_en)
+                        st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error("번역 서버에 일시적으로 연결할 수 없습니다.")
+                else:
+                    st.info("해당 기업의 개요 정보가 제공되지 않습니다.")
                 
         else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 else:
