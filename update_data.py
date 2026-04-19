@@ -19,8 +19,24 @@ else:
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
+    cursor = conn.cursor()
+    
+    # SMR 캐시 테이블의 스키마 변경 (오리지널 4대 요소 적용을 위한 마이그레이션)
+    cursor.execute("PRAGMA table_info(smr_cache)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'sales_growth' not in columns:
+        print("💡 SMR 알고리즘 업그레이드 감지. 기존 캐시를 초기화하고 새로운 스키마를 적용합니다.")
+        conn.execute("DROP TABLE IF EXISTS smr_cache")
+        
     conn.execute("CREATE TABLE IF NOT EXISTS company_profiles (symbol TEXT PRIMARY KEY, industry TEXT, description TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS smr_cache (symbol TEXT PRIMARY KEY, smr_acc REAL, is_prof INTEGER, last_updated DATE)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS smr_cache (
+            symbol TEXT PRIMARY KEY, 
+            sales_growth REAL, pre_tax_margin REAL, 
+            after_tax_margin REAL, roe REAL, 
+            last_updated DATE
+        )
+    """)
     conn.execute("CREATE TABLE IF NOT EXISTS security_snapshot (date TEXT, symbol TEXT, company_name TEXT, industry TEXT, price REAL, volume REAL, adv_50 REAL, ad_grade TEXT, smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
     conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER)")
     conn.close()
@@ -72,7 +88,7 @@ def update_database():
     all_results = []
     snapshot_rows = []
     
-    print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 및 AD 수급 분석 시작...")
+    print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 추세 및 AD 수급 분석 시작...")
     
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
@@ -86,24 +102,39 @@ def update_database():
             try:
                 hist = price_data.copy() if len(chunk) == 1 else price_data[ticker].copy() if ticker in price_data.columns.levels[0] else pd.DataFrame()
                 hist = hist.dropna(subset=['Close', 'Volume'])
+                
+                # 최소 65거래일(1개 분기) 이상 상장된 기업만 취급
                 if len(hist) < 65: continue
 
                 p = hist['Close']
                 v = hist['Volume']
                 
-                current_p = float(p.iloc[-1])
-                rs_raw = (current_p / p.iloc[-21] * 2) + (current_p / p.iloc[-63] * 2) if len(hist) >= 63 else 0
-                adv_50 = float((v.tail(50).mean() * current_p))
+                c_0 = float(p.iloc[-1])
+                adv_50 = float((v.tail(50).mean() * c_0))
+                
+                # [RS 로직] 12개월(252일) 가중 평균 수익률 (40% / 20% / 20% / 20%)
+                c_63 = float(p.iloc[-63]) if len(p) >= 63 else c_0
+                c_126 = float(p.iloc[-126]) if len(p) >= 126 else c_63
+                c_189 = float(p.iloc[-189]) if len(p) >= 189 else c_126
+                c_252 = float(p.iloc[-252]) if len(p) >= 252 else c_189
 
-                v_mean = v.rolling(50).mean().bfill()
-                pct_change = p.pct_change().fillna(0) * 100
-                ad_raw = np.where(v_mean > 0, (v / v_mean) * pct_change, 0)
-                ad_raw_sum = pd.Series(ad_raw).tail(65).sum()
+                ret_3m = (c_0 - c_63) / c_63 if c_63 != 0 else 0
+                ret_6m = (c_0 - c_126) / c_126 if c_126 != 0 else 0
+                ret_9m = (c_0 - c_189) / c_189 if c_189 != 0 else 0
+                ret_12m = (c_0 - c_252) / c_252 if c_252 != 0 else 0
+                
+                rs_raw = (0.4 * ret_3m) + (0.2 * ret_6m) + (0.2 * ret_9m) + (0.2 * ret_12m)
+
+                # [AD 로직] 지난 13주(65일) 거래량 가중 주가 모멘텀 누적 (Money Flow)
+                p_65 = p.tail(65)
+                v_65 = v.tail(65)
+                pct_change_65 = p_65.pct_change().fillna(0)
+                ad_raw = (pct_change_65 * v_65).sum() / v_65.sum() if v_65.sum() > 0 else 0
 
                 industry = base_df.loc[base_df['symbol'] == ticker, 'industry'].values[0]
 
-                all_results.append({'symbol': ticker, 'price': current_p, 'rs_raw': rs_raw, 'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw_sum})
-                snapshot_rows.append({'date': datetime.now().strftime('%Y-%m-%d'), 'symbol': ticker, 'company_name': base_df.loc[base_df['symbol'] == ticker, 'name'].values[0], 'industry': industry, 'price': current_p, 'volume': float(v.iloc[-1]), 'adv_50': adv_50})
+                all_results.append({'symbol': ticker, 'price': c_0, 'rs_raw': rs_raw, 'industry': industry, 'adv_50': adv_50, 'ad_raw': ad_raw})
+                snapshot_rows.append({'date': datetime.now().strftime('%Y-%m-%d'), 'symbol': ticker, 'company_name': base_df.loc[base_df['symbol'] == ticker, 'name'].values[0], 'industry': industry, 'price': c_0, 'volume': float(v.iloc[-1]), 'adv_50': adv_50})
             except: continue
         
         if i % 500 == 0 and i > 0: print(f" > {i}개 완료...")
@@ -116,45 +147,74 @@ def update_database():
     df['ad_raw'] = df['ad_raw'].fillna(0)
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
-    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 등급 전체 종목 업데이트 진행 중...")
+    print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 4대 요소 정밀 수집 진행 중...")
     
     smr_db = pd.read_sql("SELECT * FROM smr_cache", conn)
     smr_db['last_updated'] = pd.to_datetime(smr_db['last_updated'])
     df = pd.merge(df, smr_db, on='symbol', how='left')
 
     ninety_days_ago = datetime.now() - timedelta(days=90)
-    
-    # 💡 핵심 변경: (df['rs_score'] >= 70) 조건을 삭제하여 모든 종목의 재무 데이터를 가져옵니다.
-    needs_smr_update = df[((df['smr_acc'].isnull()) | (df['last_updated'] < ninety_days_ago))]['symbol'].tolist()
+    needs_smr_update = df[((df['sales_growth'].isnull()) | (df['last_updated'] < ninety_days_ago))]['symbol'].tolist()
 
     if needs_smr_update:
-        print(f" > {len(needs_smr_update)}개 전체 종목 재무 데이터 갱신 중 (최초 실행 시 약 20분 소요)...")
+        print(f" > {len(needs_smr_update)}개 종목 재무 데이터 갱신 중 (IS 및 BS 동시 호출)...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                url = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=4&apikey={FMP_API_KEY}"
-                res = requests.get(url, timeout=5)
-                if res.status_code == 200:
-                    qf = res.json()
-                    if len(qf) >= 3:
-                        rev = [item.get('revenue', 0) for item in qf]
-                        net = [item.get('netIncome', 0) for item in qf]
-                        g0 = (rev[0] - rev[1]) / abs(rev[1]) if rev[1] != 0 else 0
-                        g1 = (rev[1] - rev[2]) / abs(rev[2]) if rev[2] != 0 else 0
-                        smr_acc = g0 - g1
-                        is_prof = 1 if len(net) > 0 and net[0] > 0 else 0
+                # 손익계산서(최대 5분기: YoY 계산용)와 대차대조표(자본 확인용) 호출
+                url_is = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=5&apikey={FMP_API_KEY}"
+                url_bs = f"https://financialmodelingprep.com/stable/balance-sheet-statement?symbol={ticker}&period=quarter&limit=1&apikey={FMP_API_KEY}"
+                
+                res_is = requests.get(url_is, timeout=5)
+                res_bs = requests.get(url_bs, timeout=5)
+                
+                if res_is.status_code == 200 and res_bs.status_code == 200:
+                    qf = res_is.json()
+                    bf = res_bs.json()
+                    
+                    if len(qf) >= 1 and len(bf) >= 1:
+                        # 1. 매출 성장률 (최근 분기의 전년 동기 대비 성장률, 데이터 부족 시 0)
+                        rev_0 = qf[0].get('revenue') or 0
+                        rev_4 = qf[4].get('revenue') or 0 if len(qf) == 5 else (qf[-1].get('revenue') or 0)
+                        sales_growth = (rev_0 - rev_4) / abs(rev_4) if rev_4 != 0 else 0
                         
-                        conn.execute("INSERT OR REPLACE INTO smr_cache (symbol, smr_acc, is_prof, last_updated) VALUES (?, ?, ?, ?)", (ticker, smr_acc, is_prof, datetime.now().strftime('%Y-%m-%d')))
+                        # 2. 세전 이익률 (Pre-tax Margin)
+                        inc_tax = qf[0].get('incomeBeforeTax') or 0
+                        pre_tax_margin = inc_tax / rev_0 if rev_0 != 0 else 0
+                        
+                        # 3. 세후 이익률 (After-tax Margin)
+                        net_inc = qf[0].get('netIncome') or 0
+                        after_tax_margin = net_inc / rev_0 if rev_0 != 0 else 0
+                        
+                        # 4. ROE (최근 4개 분기 순이익 합산 / 자본)
+                        ttm_net = sum([(item.get('netIncome') or 0) for item in qf[:4]])
+                        equity = bf[0].get('totalStockholdersEquity') or 0
+                        roe = ttm_net / equity if equity != 0 else 0
+                        
+                        conn.execute("""
+                            INSERT OR REPLACE INTO smr_cache 
+                            (symbol, sales_growth, pre_tax_margin, after_tax_margin, roe, last_updated) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (ticker, sales_growth, pre_tax_margin, after_tax_margin, roe, datetime.now().strftime('%Y-%m-%d')))
                         conn.commit()
-                        df.loc[df['symbol'] == ticker, ['smr_acc', 'is_prof']] = [smr_acc, is_prof]
+                        
+                        df.loc[df['symbol'] == ticker, ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']] = [sales_growth, pre_tax_margin, after_tax_margin, roe]
             except: pass
-            time.sleep(0.25) # 300회/분 제한 준수
+            
+            # API 한도 방어 (분당 300회 제한) - 2번 호출하므로 0.4초 대기
+            time.sleep(0.4) 
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
             
-    df['smr_acc'] = df['smr_acc'].fillna(0)
-    df['is_prof'] = df['is_prof'].fillna(0)
-    df['smr_val'] = df['smr_acc'].rank(pct=True) + (df['is_prof'] * 0.5)
+    # 누락된 데이터 0 처리
+    for col in ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']:
+        df[col] = df[col].fillna(0)
     
-    # 데이터가 0인 종목이 많아 qcut 에러 방지를 위해 method='first' 유지
+    # [SMR 로직] 4가지 요소별 백분위 랭킹 산출 후 합산하여 최종 SMR 등급 부여
+    df['rank_sg'] = df['sales_growth'].rank(pct=True)
+    df['rank_ptm'] = df['pre_tax_margin'].rank(pct=True)
+    df['rank_atm'] = df['after_tax_margin'].rank(pct=True)
+    df['rank_roe'] = df['roe'].rank(pct=True)
+    
+    df['smr_val'] = df['rank_sg'] + df['rank_ptm'] + df['rank_atm'] + df['rank_roe']
     df['smr_grade'] = pd.qcut(df['smr_val'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
     ind_rs = df.groupby('industry')['rs_raw'].mean().reset_index(name='ind_rs_raw')
