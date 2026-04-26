@@ -43,7 +43,7 @@ def get_favorites_from_gsheet():
     try:
         conn = get_gsheet_conn()
         # 시트 이름은 'Sheet1'이 기본값입니다. 본인 구글 시트에 맞게 수정 가능.
-        df = conn.read(worksheet="Sheet1", ttl=0) 
+        df = conn.read(worksheet="시트1", ttl=0) 
         if 'symbol' in df.columns:
             return df['symbol'].dropna().tolist()
         return []
@@ -62,7 +62,7 @@ def toggle_favorite_gsheet(symbol):
             favs.append(symbol)
         
         new_df = pd.DataFrame(favs, columns=['symbol'])
-        conn.update(worksheet="Sheet1", data=new_df)
+        conn.update(worksheet="시트1", data=new_df)
         st.cache_data.clear() 
         return True # 성공하면 True 반환
     except Exception as e:
