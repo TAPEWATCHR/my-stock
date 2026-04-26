@@ -101,25 +101,31 @@ st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
 st.markdown("""
 <style>
     .stApp { background-color: #161C27 !important; }
+    
+    /* 메인 화면 기본 글씨는 하얗게 */
     .block-container p, .block-container span, .block-container h1, .block-container h2, 
     .block-container h3, .block-container h4, .block-container label { color: #FFFFFF !important; }
+    
+    /* 사이드바 글씨는 어둡게 */
     [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { color: #1E293B !important; font-size: 13px; }
-    .stButton > button { background-color: #FFFFFF !important; color: #1E293B !important; border: 1px solid #CBD5E1 !important; font-weight: bold; }
+    
+    /* 👇 [핵심 해결] 모든 버튼 자체의 배경을 흰색으로 */
+    .stButton > button { 
+        background-color: #FFFFFF !important; 
+        border: 1px solid #CBD5E1 !important; 
+    }
+    
+    /* 👇 [핵심 해결] 버튼 내부의 글씨(p, span, div)는 무조건 어두운 남색으로 강제! */
+    .stButton > button p, .stButton > button span, .stButton > button div {
+        color: #1E293B !important; 
+        font-weight: bold !important;
+    }
+
     .overview-panel { background: #2A3143; padding: 1.2rem; border-radius: 8px; color: #FFFFFF !important; line-height: 1.6;}
     .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6; color: #D1D5DB !important; }
     .check-pass { border-left-color: #10b981; }
     .check-fail { border-left-color: #ef4444; }
-    
-    /* 👇 방금 수정한 관심종목 버튼(별표) 색상 강제 지정 부분 */
-    .fav-btn button { 
-        background-color: #FFFFFF !important; 
-        border: 1px solid #CBD5E1 !important; 
-    }
-    .fav-btn button p, .fav-btn button div {
-        color: #1E293B !important; 
-        font-weight: bold !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -208,7 +214,7 @@ if not df.empty:
             with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
-                st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
+                # div 껍데기 없애고 깔끔하게 버튼만 배치!
                 if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
