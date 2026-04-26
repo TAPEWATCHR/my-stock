@@ -27,7 +27,8 @@ def get_rs_history(ticker):
     if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
     try:
-        hist = pd.read_sql("SELECT date, rs_score FROM rs_history WHERE symbol = ? ORDER BY date ASC", conn, params=(ticker,))
+        # 💡 변경점: industry_rs_score가 있는지 확인하기 위해 전체(*)를 불러오도록 수정
+        hist = pd.read_sql("SELECT * FROM rs_history WHERE symbol = ? ORDER BY date ASC", conn, params=(ticker,))
     except: hist = pd.DataFrame()
     conn.close()
     return hist
@@ -122,7 +123,6 @@ df = get_data()
 fav_list = get_favorites()
 
 if not df.empty:
-    # 💡 1차 무적 방어: 구버전 DB(컬럼 누락)를 읽더라도 무조건 컬럼을 생성하여 채워줌
     if 'adv_50' not in df.columns: df['adv_50'] = 0.0
     if 'industry_rs_score' not in df.columns: df['industry_rs_score'] = 0
     if 'ad_grade' not in df.columns: df['ad_grade'] = 'C'
@@ -134,6 +134,7 @@ if not df.empty:
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
         rs_m = st.slider("최소 RS 점수", 1, 99, 80)
+        # 💡 변경점 1: 산업군 RS 점수 기본값을 70으로 상향
         ind_rs_m = st.slider("최소 산업군 RS 점수", 1, 99, 70)
         
         with st.expander("🏭 산업군 필터"):
@@ -156,6 +157,7 @@ if not df.empty:
                         st.rerun()
 
         def btn_filter(label, key):
+            # 💡 변경점 2: SMR, AD 등급 필터 기본값을 A, B 로만 설정
             if key not in st.session_state: st.session_state[key] = ["A", "B"]
             st.caption(label)
             cols = st.columns(3)
@@ -193,7 +195,7 @@ if not df.empty:
     with col_r:
         if len(sel_row.selection.rows) > 0:
             target = f_df.iloc[sel_row.selection.rows[0]]
-            if isinstance(target, pd.DataFrame): target = target.iloc[0] # 행이 여러 개로 꼬였을 경우 방어
+            if isinstance(target, pd.DataFrame): target = target.iloc[0] 
             ticker = target.get('symbol', 'UNKNOWN')
             
             c1, c2 = st.columns([4, 1])
@@ -201,7 +203,7 @@ if not df.empty:
             with c2:
                 is_fav = ticker in fav_list
                 st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
-                if st.button("🤍 관심" if is_fav else "🤍 관심", use_container_width=True):
+                if st.button("🤍 관심해제" if is_fav else "🤍 관심저장", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -224,13 +226,27 @@ if not df.empty:
                 rs_hist_df = get_rs_history(ticker)
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
-                    rs_chart = alt.Chart(rs_hist_df).mark_line(color="#64ffda", strokeWidth=2).encode(
-                        x=alt.X('date:T', title='날짜'), y=alt.Y('rs_score:Q', title='RS 점수', scale=alt.Scale(domain=[1, 100]))
-                    ).properties(height=240)
+                    
+                    # 💡 변경점 3: 개별 RS와 산업군 RS 추이 그래프 동시 출력
+                    # 새버전 DB(industry_rs_score 존재)일 때와 구버전 DB일 때를 모두 방어
+                    if 'industry_rs_score' in rs_hist_df.columns:
+                        melted_df = rs_hist_df.melt('date', value_vars=['rs_score', 'industry_rs_score'], var_name='Type', value_name='Score')
+                        melted_df['Type'] = melted_df['Type'].map({'rs_score': '개별 RS 점수', 'industry_rs_score': '산업군 RS 점수'})
+                        
+                        rs_chart = alt.Chart(melted_df).mark_line(strokeWidth=2).encode(
+                            x=alt.X('date:T', title='날짜'), 
+                            y=alt.Y('Score:Q', title='점수', scale=alt.Scale(domain=[1, 100])),
+                            color=alt.Color('Type:N', title='지표', scale=alt.Scale(domain=['개별 RS 점수', '산업군 RS 점수'], range=['#64ffda', '#f59e0b']))
+                        ).properties(height=240)
+                    else:
+                        # 구버전 DB 대응 (업데이트 파일 돌리기 전 에러 방지)
+                        rs_chart = alt.Chart(rs_hist_df).mark_line(color="#64ffda", strokeWidth=2).encode(
+                            x=alt.X('date:T', title='날짜'), y=alt.Y('rs_score:Q', title='RS 점수', scale=alt.Scale(domain=[1, 100]))
+                        ).properties(height=240)
+                        
                     st.altair_chart(rs_chart, use_container_width=True)
 
             with t_check:
-                # 💡 2차 무적 방어: 데이터가 비어있어도 get으로 꺼내서 에러 원천 차단
                 price_val = float(target.get('price', 0))
                 rs_val = int(target.get('rs_score', 0))
                 smr_val = str(target.get('smr_grade', 'C'))
