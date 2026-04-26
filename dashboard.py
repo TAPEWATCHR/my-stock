@@ -7,12 +7,14 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 from deep_translator import GoogleTranslator
+from streamlit_gsheets import GSheetsConnection # 💡 [추가] 구글 시트 연동 라이브러리
 
 # 환경 변수에서 FMP API 키 로드
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
+    # 기존 로컬 favorites 테이블은 더 이상 사용하지 않지만 호환성을 위해 유지
     conn.execute("CREATE TABLE IF NOT EXISTS favorites (symbol TEXT PRIMARY KEY)")
     conn.close()
 
@@ -32,23 +34,40 @@ def get_rs_history(ticker):
     conn.close()
     return hist
 
-def toggle_favorite(symbol):
-    conn = sqlite3.connect('ibd_system.db')
-    c = conn.cursor()
-    c.execute("SELECT symbol FROM favorites WHERE symbol=?", (symbol,))
-    if c.fetchone(): c.execute("DELETE FROM favorites WHERE symbol=?", (symbol,))
-    else: c.execute("INSERT INTO favorites (symbol) VALUES (?)", (symbol,))
-    conn.commit()
-    conn.close()
+# --- ☁️ [핵심 수정] 구글 시트 기반 즐겨찾기 함수 ---
+def get_gsheet_conn():
+    # Streamlit Secrets에 설정된 정보를 바탕으로 연결
+    return st.connection("gsheets", type=GSheetsConnection)
 
-def get_favorites():
-    conn = sqlite3.connect('ibd_system.db')
+def get_favorites_from_gsheet():
     try:
-        favs = pd.read_sql("SELECT symbol FROM favorites", conn)['symbol'].tolist()
-    except:
-        favs = []
-    conn.close()
-    return favs
+        conn = get_gsheet_conn()
+        # 시트 이름은 'Sheet1'이 기본값입니다. 본인 구글 시트에 맞게 수정 가능.
+        df = conn.read(worksheet="Sheet1", ttl=0) 
+        if 'symbol' in df.columns:
+            return df['symbol'].dropna().tolist()
+        return []
+    except Exception as e:
+        # 세팅이 안 되어 있거나 오류 발생 시 빈 리스트 반환 (앱 크래시 방지)
+        return []
+
+def toggle_favorite_gsheet(symbol):
+    try:
+        conn = get_gsheet_conn()
+        favs = get_favorites_from_gsheet()
+        
+        if symbol in favs:
+            favs.remove(symbol)
+        else:
+            favs.append(symbol)
+        
+        # 변경된 리스트를 다시 데이터프레임으로 만들어 구글 시트에 덮어쓰기
+        new_df = pd.DataFrame(favs, columns=['symbol'])
+        conn.update(worksheet="Sheet1", data=new_df)
+        st.cache_data.clear() # 캐시 초기화해서 즉시 반영
+    except Exception as e:
+        st.error(f"구글 시트 업데이트 실패: 연결 설정을 확인해주세요. ({e})")
+# ----------------------------------------------------
 
 @st.cache_data(ttl=3600)
 def get_fin_data(ticker):
@@ -134,7 +153,9 @@ if not FMP_API_KEY:
 
 init_db()
 df = get_data()
-fav_list = get_favorites()
+
+# 💡 [핵심 수정] 구글 시트에서 즐겨찾기 리스트를 불러옴
+fav_list = get_favorites_from_gsheet()
 
 if not df.empty:
     if 'adv_50' not in df.columns: df['adv_50'] = 0.0
@@ -144,7 +165,6 @@ if not df.empty:
     if 'industry' not in df.columns: df['industry'] = 'Unknown'
 
     with st.sidebar:
-        # 💡 [추가] 사이드바 최상단에 모바일 모드 토글 배치
         is_mobile = st.toggle("📱 모바일 화면 최적화", value=False)
         st.divider()
 
@@ -203,7 +223,6 @@ if not df.empty:
     display_df = f_df.copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
-    # 💡 [추가] 모바일 모드 여부에 따른 컬럼 표시 분기 처리
     if is_mobile:
         display_df = display_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade']]
         display_df.rename(columns={
@@ -226,18 +245,17 @@ if not df.empty:
             'industry': '산업군명'
         }, inplace=True)
 
-    # 💡 [추가] 레이아웃 분기 처리 (모바일은 1단, PC는 2단)
     if is_mobile:
         st.subheader(f"Leaders List ({len(display_df)})")
         sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=350, use_container_width=True)
         st.divider()
-        detail_container = st.container() # 아래쪽으로 쭉 이어붙임
+        detail_container = st.container()
     else:
         col_l, col_r = st.columns([4, 5])
         with col_l:
             st.subheader(f"Leaders List ({len(display_df)})")
             sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
-        detail_container = col_r # 오른쪽 단에 이어붙임
+        detail_container = col_r
 
     with detail_container:
         if len(sel_row.selection.rows) > 0:
@@ -249,15 +267,15 @@ if not df.empty:
             with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
+                # 💡 [핵심 수정] 버튼 클릭 시 구글 시트 연동 함수 호출
                 if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
-                    toggle_favorite(ticker)
+                    toggle_favorite_gsheet(ticker)
                     st.rerun()
             
             is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
             with t_chart:
-                # 💡 [추가] 모바일일 때는 트레이딩뷰 차트 높이도 살짝 줄여줌
                 chart_height = 350 if is_mobile else 500
                 tv_widget = f"""
                 <div class="tradingview-widget-container" style="height: {chart_height}px; width: 100%;">
