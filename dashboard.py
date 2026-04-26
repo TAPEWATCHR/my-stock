@@ -61,12 +61,14 @@ def toggle_favorite_gsheet(symbol):
         else:
             favs.append(symbol)
         
-        # 변경된 리스트를 다시 데이터프레임으로 만들어 구글 시트에 덮어쓰기
         new_df = pd.DataFrame(favs, columns=['symbol'])
         conn.update(worksheet="Sheet1", data=new_df)
-        st.cache_data.clear() # 캐시 초기화해서 즉시 반영
+        st.cache_data.clear() 
+        return True # 성공하면 True 반환
     except Exception as e:
-        st.error(f"구글 시트 업데이트 실패: 연결 설정을 확인해주세요. ({e})")
+        # 실패하면 화면에 에러를 띄우고 False 반환
+        st.error(f"🚨 구글 시트 저장 실패: {e}")
+        return False
 # ----------------------------------------------------
 
 @st.cache_data(ttl=3600)
@@ -267,10 +269,10 @@ if not df.empty:
             with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
-                # 💡 [핵심 수정] 버튼 클릭 시 구글 시트 연동 함수 호출
                 if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
-                    toggle_favorite_gsheet(ticker)
-                    st.rerun()
+                    success = toggle_favorite_gsheet(ticker)
+                    if success: # 성공했을 때만 화면을 새로고침함
+                        st.rerun()
             
             is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
