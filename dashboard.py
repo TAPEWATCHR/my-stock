@@ -134,7 +134,7 @@ if not df.empty:
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
         rs_m = st.slider("최소 RS 점수", 1, 99, 80)
-        ind_rs_m = st.slider("최소 산업군 RS 점수", 1, 99, 50)
+        ind_rs_m = st.slider("최소 산업군 RS 점수", 1, 99, 70)
         
         with st.expander("🏭 산업군 필터"):
             all_inds = sorted(df['industry'].unique().tolist())
@@ -156,7 +156,7 @@ if not df.empty:
                         st.rerun()
 
         def btn_filter(label, key):
-            if key not in st.session_state: st.session_state[key] = ["A", "B", "C"]
+            if key not in st.session_state: st.session_state[key] = ["A", "B"]
             st.caption(label)
             cols = st.columns(3)
             for i, g in enumerate(["A", "B", "C", "D", "E", "전체"]):
@@ -201,7 +201,7 @@ if not df.empty:
             with c2:
                 is_fav = ticker in fav_list
                 st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
-                if st.button("🤍 관심해제" if is_fav else "🤍 관심저장", use_container_width=True):
+                if st.button("🤍 관심" if is_fav else "🤍 관심", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
