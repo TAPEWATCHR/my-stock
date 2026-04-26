@@ -24,7 +24,7 @@ def init_db():
     # SMR 캐시 테이블의 스키마 변경 (오리지널 4대 요소 적용을 위한 마이그레이션)
     cursor.execute("PRAGMA table_info(smr_cache)")
     columns = [info[1] for info in cursor.fetchall()]
-    if 'sales_growth' not in columns:
+    if 'sales_growth' not in columns and columns:
         print("💡 SMR 알고리즘 업그레이드 감지. 기존 캐시를 초기화하고 새로운 스키마를 적용합니다.")
         conn.execute("DROP TABLE IF EXISTS smr_cache")
         
@@ -38,7 +38,17 @@ def init_db():
         )
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS security_snapshot (date TEXT, symbol TEXT, company_name TEXT, industry TEXT, price REAL, volume REAL, adv_50 REAL, ad_grade TEXT, smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
-    conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER)")
+    
+    # 👉 rs_history 테이블 마이그레이션 및 생성 (산업군 RS 추가)
+    cursor.execute("PRAGMA table_info(rs_history)")
+    columns_rs = [info[1] for info in cursor.fetchall()]
+    if columns_rs:
+        if 'industry_rs_score' not in columns_rs:
+            print("💡 rs_history 테이블 마이그레이션 (industry_rs_score 컬럼 추가)")
+            conn.execute("ALTER TABLE rs_history ADD COLUMN industry_rs_score INTEGER DEFAULT 0")
+    else:
+        conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
+        
     conn.close()
 
 def get_pure_exchange_stocks():
@@ -172,20 +182,20 @@ def update_database():
                     bf = res_bs.json()
                     
                     if len(qf) >= 1 and len(bf) >= 1:
-                        # 1. 매출 성장률 (최근 분기의 전년 동기 대비 성장률, 데이터 부족 시 0)
+                        # 1. 매출 성장률
                         rev_0 = qf[0].get('revenue') or 0
                         rev_4 = qf[4].get('revenue') or 0 if len(qf) == 5 else (qf[-1].get('revenue') or 0)
                         sales_growth = (rev_0 - rev_4) / abs(rev_4) if rev_4 != 0 else 0
                         
-                        # 2. 세전 이익률 (Pre-tax Margin)
+                        # 2. 세전 이익률
                         inc_tax = qf[0].get('incomeBeforeTax') or 0
                         pre_tax_margin = inc_tax / rev_0 if rev_0 != 0 else 0
                         
-                        # 3. 세후 이익률 (After-tax Margin)
+                        # 3. 세후 이익률
                         net_inc = qf[0].get('netIncome') or 0
                         after_tax_margin = net_inc / rev_0 if rev_0 != 0 else 0
                         
-                        # 4. ROE (최근 4개 분기 순이익 합산 / 자본)
+                        # 4. ROE
                         ttm_net = sum([(item.get('netIncome') or 0) for item in qf[:4]])
                         equity = bf[0].get('totalStockholdersEquity') or 0
                         roe = ttm_net / equity if equity != 0 else 0
@@ -200,7 +210,7 @@ def update_database():
                         df.loc[df['symbol'] == ticker, ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']] = [sales_growth, pre_tax_margin, after_tax_margin, roe]
             except: pass
             
-            # API 한도 방어 (분당 300회 제한) - 2번 호출하므로 0.4초 대기
+            # API 한도 방어 (분당 300회 제한)
             time.sleep(0.4) 
             if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
             
@@ -224,9 +234,10 @@ def update_database():
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
 
-    rs_history_df = final_df[['symbol', 'rs_score']].copy()
+    # 👉 rs_history 테이블에 개별 RS와 함께 industry_rs_score 저장
+    rs_history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     rs_history_df['date'] = datetime.now().strftime('%Y-%m-%d')
-    rs_history_df[['symbol', 'date', 'rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
+    rs_history_df[['symbol', 'date', 'rs_score', 'industry_rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
 
     if snapshot_rows:
         snapshot_df = pd.DataFrame(snapshot_rows).merge(final_df[['symbol', 'ad_grade', 'smr_grade', 'rs_score', 'industry_rs_score']], on='symbol', how='left')
