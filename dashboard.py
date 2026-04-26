@@ -110,13 +110,13 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { color: #1E293B !important; font-size: 13px; }
     
-    /* 👇 [핵심 해결] 모든 버튼 자체의 배경을 흰색으로 */
+    /* 버튼 배경 및 테두리 */
     .stButton > button { 
         background-color: #FFFFFF !important; 
         border: 1px solid #CBD5E1 !important; 
     }
     
-    /* 👇 [핵심 해결] 버튼 내부의 글씨(p, span, div)는 무조건 어두운 남색으로 강제! */
+    /* 버튼 안의 글씨를 어두운 남색으로 강제 지정 */
     .stButton > button p, .stButton > button span, .stButton > button div {
         color: #1E293B !important; 
         font-weight: bold !important;
@@ -199,6 +199,18 @@ if not df.empty:
     display_df = f_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
+    # 💡 [핵심 수정] 표에 표시될 컬럼명을 한글로 예쁘게 변경
+    display_df.rename(columns={
+        'symbol': '종목', 
+        'price': '가격', 
+        'adv_50': '50일 평균 거래대금', 
+        'rs_score': 'RS점수', 
+        'industry_rs_score': '산업군RS점수', 
+        'smr_grade': 'SMR등급', 
+        'ad_grade': 'AD등급', 
+        'industry': '산업군명'
+    }, inplace=True)
+
     col_l, col_r = st.columns([4, 5])
     with col_l:
         st.subheader(f"Leaders List ({len(display_df)})")
@@ -214,11 +226,9 @@ if not df.empty:
             with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
-                # div 껍데기 없애고 깔끔하게 버튼만 배치!
                 if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
             
             is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
@@ -240,11 +250,9 @@ if not df.empty:
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
                     
                     if 'industry_rs_score' in rs_hist_df.columns:
-                        # 💡 핵심 수정: 0 값을 결측치(NA)로 변경 후 삭제하여 그래프 꺾임 현상 방지
                         rs_hist_df['industry_rs_score'] = rs_hist_df['industry_rs_score'].replace(0, pd.NA)
-                        
                         melted_df = rs_hist_df.melt('date', value_vars=['rs_score', 'industry_rs_score'], var_name='Type', value_name='Score')
-                        melted_df = melted_df.dropna(subset=['Score']) # 결측치 날리기
+                        melted_df = melted_df.dropna(subset=['Score'])
                         melted_df['Type'] = melted_df['Type'].map({'rs_score': '개별 RS 점수', 'industry_rs_score': '산업군 RS 점수'})
                         
                         rs_chart = alt.Chart(melted_df).mark_line(strokeWidth=2).encode(
