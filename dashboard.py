@@ -110,7 +110,7 @@ st.markdown("""
     .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6; color: #D1D5DB !important; }
     .check-pass { border-left-color: #10b981; }
     .check-fail { border-left-color: #ef4444; }
-    .fav-btn button { color: #D1D5DB !important; border-color: #D1D5DB !important; background-color: transparent !important; }
+    .fav-btn button { color: #1E293B !important; background-color: #FFFFFF !important; border: 1px solid #CBD5E1 !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,7 +200,7 @@ if not df.empty:
             with c2:
                 is_fav = ticker in fav_list
                 st.markdown('<div class="fav-btn">', unsafe_allow_html=True)
-                if st.button("🤍 관심해제" if is_fav else "🤍 관심저장", use_container_width=True):
+                if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
                     toggle_favorite(ticker)
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
