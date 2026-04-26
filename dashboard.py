@@ -144,7 +144,7 @@ if not df.empty:
     if 'industry' not in df.columns: df['industry'] = 'Unknown'
 
     with st.sidebar:
-        st.header("🎛️ Terminal Control")
+        st.header("필터")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
         rs_m = st.slider("최소 RS 점수", 1, 99, 80)
