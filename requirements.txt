@@ -9,3 +9,4 @@ numpy
 requests-cache
 requests-ratelimiter
 urllib3
+st-gsheets-connection
