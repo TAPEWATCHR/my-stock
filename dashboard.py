@@ -144,6 +144,10 @@ if not df.empty:
     if 'industry' not in df.columns: df['industry'] = 'Unknown'
 
     with st.sidebar:
+        # 💡 [추가] 사이드바 최상단에 모바일 모드 토글 배치
+        is_mobile = st.toggle("📱 모바일 화면 최적화", value=False)
+        st.divider()
+
         st.header("필터")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
         min_adv_m = st.number_input("최소 거래대금 ($Million)", value=10.0)
@@ -196,33 +200,52 @@ if not df.empty:
     f_df = df[mask].sort_values('rs_score', ascending=False).copy()
     if show_fav_only: f_df = f_df[f_df['symbol'].isin(fav_list)]
 
-    display_df = f_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']].copy()
+    display_df = f_df.copy()
     display_df['adv_50'] = display_df['adv_50'].apply(format_adv)
 
-    # 💡 [핵심 수정] 표에 표시될 컬럼명을 한글로 예쁘게 변경
-    display_df.rename(columns={
-        'symbol': '종목', 
-        'price': '가격', 
-        'adv_50': '50일 평균 거래대금', 
-        'rs_score': 'RS점수', 
-        'industry_rs_score': '산업군RS점수', 
-        'smr_grade': 'SMR등급', 
-        'ad_grade': 'AD등급', 
-        'industry': '산업군명'
-    }, inplace=True)
+    # 💡 [추가] 모바일 모드 여부에 따른 컬럼 표시 분기 처리
+    if is_mobile:
+        display_df = display_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade']]
+        display_df.rename(columns={
+            'symbol': '종목', 
+            'price': '가격', 
+            'rs_score': 'RS점수', 
+            'smr_grade': 'SMR등급', 
+            'ad_grade': 'AD등급'
+        }, inplace=True)
+    else:
+        display_df = display_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']]
+        display_df.rename(columns={
+            'symbol': '종목', 
+            'price': '가격', 
+            'adv_50': '50일 평균 거래대금', 
+            'rs_score': 'RS점수', 
+            'industry_rs_score': '산업군RS점수', 
+            'smr_grade': 'SMR등급', 
+            'ad_grade': 'AD등급', 
+            'industry': '산업군명'
+        }, inplace=True)
 
-    col_l, col_r = st.columns([4, 5])
-    with col_l:
+    # 💡 [추가] 레이아웃 분기 처리 (모바일은 1단, PC는 2단)
+    if is_mobile:
         st.subheader(f"Leaders List ({len(display_df)})")
-        sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
+        sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=350, use_container_width=True)
+        st.divider()
+        detail_container = st.container() # 아래쪽으로 쭉 이어붙임
+    else:
+        col_l, col_r = st.columns([4, 5])
+        with col_l:
+            st.subheader(f"Leaders List ({len(display_df)})")
+            sel_row = st.dataframe(display_df, hide_index=True, on_select="rerun", selection_mode="single-row", height=800, use_container_width=True)
+        detail_container = col_r # 오른쪽 단에 이어붙임
 
-    with col_r:
+    with detail_container:
         if len(sel_row.selection.rows) > 0:
             target = f_df.iloc[sel_row.selection.rows[0]]
             if isinstance(target, pd.DataFrame): target = target.iloc[0] 
             ticker = target.get('symbol', 'UNKNOWN')
             
-            c1, c2 = st.columns([4, 1])
+            c1, c2 = st.columns([4, 2] if is_mobile else [4, 1])
             with c1: st.markdown(f"## {ticker} <span style='font-size:18px; color:#9CA3AF;'>{target.get('industry', 'Unknown')}</span>", unsafe_allow_html=True)
             with c2:
                 is_fav = ticker in fav_list
@@ -234,8 +257,10 @@ if not df.empty:
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
             
             with t_chart:
+                # 💡 [추가] 모바일일 때는 트레이딩뷰 차트 높이도 살짝 줄여줌
+                chart_height = 350 if is_mobile else 500
                 tv_widget = f"""
-                <div class="tradingview-widget-container" style="height: 500px; width: 100%;">
+                <div class="tradingview-widget-container" style="height: {chart_height}px; width: 100%;">
                   <div id="tradingview_{ticker}" style="height: calc(100% - 32px); width: 100%;"></div>
                   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
                   <script type="text/javascript">
@@ -243,7 +268,7 @@ if not df.empty:
                   </script>
                 </div>
                 """
-                components.html(tv_widget, height=500)
+                components.html(tv_widget, height=chart_height)
 
                 rs_hist_df = get_rs_history(ticker)
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
