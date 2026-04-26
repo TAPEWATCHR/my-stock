@@ -110,7 +110,16 @@ st.markdown("""
     .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6; color: #D1D5DB !important; }
     .check-pass { border-left-color: #10b981; }
     .check-fail { border-left-color: #ef4444; }
-    .fav-btn button { color: #1E293B !important; background-color: #FFFFFF !important; border: 1px solid #CBD5E1 !important; font-weight: bold; }
+    
+    /* 👇 방금 수정한 관심종목 버튼(별표) 색상 강제 지정 부분 */
+    .fav-btn button { 
+        background-color: #FFFFFF !important; 
+        border: 1px solid #CBD5E1 !important; 
+    }
+    .fav-btn button p, .fav-btn button div {
+        color: #1E293B !important; 
+        font-weight: bold !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
