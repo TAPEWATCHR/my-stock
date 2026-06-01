@@ -415,3 +415,5 @@ if not df.empty:
         else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 else:
     st.warning("데이터베이스가 비어있습니다. 먼저 `update_data.py`를 실행해주세요.")
+
+안 맞는 내용은 빼고, 이 틀은 그대로 갖다 썼으면 좋겟는데
