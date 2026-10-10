@@ -7,14 +7,13 @@ import streamlit.components.v1 as components
 import os
 import altair as alt
 from deep_translator import GoogleTranslator
-from streamlit_gsheets import GSheetsConnection # 💡 [추가] 구글 시트 연동 라이브러리
+from streamlit_gsheets import GSheetsConnection
 
 # 환경 변수에서 FMP API 키 로드
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
-    # 기존 로컬 favorites 테이블은 더 이상 사용하지 않지만 호환성을 위해 유지
     conn.execute("CREATE TABLE IF NOT EXISTS favorites (symbol TEXT PRIMARY KEY)")
     conn.close()
 
@@ -35,21 +34,17 @@ def get_rs_history(ticker):
     conn.close()
     return hist
 
-# --- ☁️ [핵심 수정] 구글 시트 기반 즐겨찾기 함수 ---
 def get_gsheet_conn():
-    # Streamlit Secrets에 설정된 정보를 바탕으로 연결
     return st.connection("gsheets", type=GSheetsConnection)
 
 def get_favorites_from_gsheet():
     try:
         conn = get_gsheet_conn()
-        # 시트 이름은 'Sheet1'이 기본값입니다. 본인 구글 시트에 맞게 수정 가능.
         df = conn.read(worksheet="시트1", ttl=0) 
         if 'symbol' in df.columns:
             return df['symbol'].dropna().tolist()
         return []
     except Exception as e:
-        # 세팅이 안 되어 있거나 오류 발생 시 빈 리스트 반환 (앱 크래시 방지)
         return []
 
 def toggle_favorite_gsheet(symbol):
@@ -65,12 +60,10 @@ def toggle_favorite_gsheet(symbol):
         new_df = pd.DataFrame(favs, columns=['symbol'])
         conn.update(worksheet="시트1", data=new_df)
         st.cache_data.clear() 
-        return True # 성공하면 True 반환
+        return True 
     except Exception as e:
-        # 실패하면 화면에 에러를 띄우고 False 반환
         st.error(f"🚨 구글 시트 저장 실패: {e}")
         return False
-# ----------------------------------------------------
 
 @st.cache_data(ttl=3600)
 def get_fin_data(ticker):
@@ -91,6 +84,18 @@ def get_fin_data(ticker):
         
         return is_ann, bs_ann, is_qtr, info
     except: return [], [], [], {}
+
+# 💡 [추가] 번역 서버 부하 방지 및 캐싱 적용 함수 (파일 최상단에 배치)
+@st.cache_data(ttl=86400)
+def translate_text(text):
+    if not text:
+        return ""
+    try:
+        if len(text) > 4000:
+            text = text[:4000]
+        return GoogleTranslator(source='en', target='ko').translate(text)
+    except Exception as e:
+        return None
 
 def format_currency(val):
     try:
@@ -123,27 +128,12 @@ st.set_page_config(layout="wide", page_title="Market Leaders Terminal")
 st.markdown("""
 <style>
     .stApp { background-color: #161C27 !important; }
-    
-    /* 메인 화면 기본 글씨는 하얗게 */
     .block-container p, .block-container span, .block-container h1, .block-container h2, 
     .block-container h3, .block-container h4, .block-container label { color: #FFFFFF !important; }
-    
-    /* 사이드바 글씨는 어둡게 */
     [data-testid="stSidebar"] { background-color: #F8F9FA !important; }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label { color: #1E293B !important; font-size: 13px; }
-    
-    /* 버튼 배경 및 테두리 */
-    .stButton > button { 
-        background-color: #FFFFFF !important; 
-        border: 1px solid #CBD5E1 !important; 
-    }
-    
-    /* 버튼 안의 글씨를 어두운 남색으로 강제 지정 */
-    .stButton > button p, .stButton > button span, .stButton > button div {
-        color: #1E293B !important; 
-        font-weight: bold !important;
-    }
-
+    .stButton > button { background-color: #FFFFFF !important; border: 1px solid #CBD5E1 !important; }
+    .stButton > button p, .stButton > button span, .stButton > button div { color: #1E293B !important; font-weight: bold !important; }
     .overview-panel { background: #2A3143; padding: 1.2rem; border-radius: 8px; color: #FFFFFF !important; line-height: 1.6;}
     .check-box { padding: 10px; margin-bottom: 5px; border-radius: 5px; background-color: #1E293B; border-left: 5px solid #3b82f6; color: #D1D5DB !important; }
     .check-pass { border-left-color: #10b981; }
@@ -156,8 +146,6 @@ if not FMP_API_KEY:
 
 init_db()
 df = get_data()
-
-# 💡 [핵심 수정] 구글 시트에서 즐겨찾기 리스트를 불러옴
 fav_list = get_favorites_from_gsheet()
 
 if not df.empty:
@@ -181,7 +169,6 @@ if not df.empty:
             all_inds = sorted(df['industry'].unique().tolist())
             if 'ind_sel' not in st.session_state: st.session_state.ind_sel = all_inds
             
-            c_all = st.columns(1)
             is_all = len(st.session_state.ind_sel) == len(all_inds)
             if st.button(f"{'●' if is_all else '○'} 전체 선택/해제", key="all_ind_btn"):
                 st.session_state.ind_sel = [] if is_all else all_inds
@@ -228,25 +215,10 @@ if not df.empty:
 
     if is_mobile:
         display_df = display_df[['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade']]
-        display_df.rename(columns={
-            'symbol': '종목', 
-            'price': '가격', 
-            'rs_score': 'RS점수', 
-            'smr_grade': 'SMR등급', 
-            'ad_grade': 'AD등급'
-        }, inplace=True)
+        display_df.rename(columns={'symbol': '종목', 'price': '가격', 'rs_score': 'RS점수', 'smr_grade': 'SMR등급', 'ad_grade': 'AD등급'}, inplace=True)
     else:
         display_df = display_df[['symbol', 'price', 'rs_score', 'industry_rs_score', 'smr_grade', 'ad_grade', 'adv_50', 'industry']]
-        display_df.rename(columns={
-            'symbol': '종목', 
-            'price': '가격', 
-            'adv_50': '50일 평균 거래대금', 
-            'rs_score': 'RS점수', 
-            'industry_rs_score': '산업군RS점수', 
-            'smr_grade': 'SMR등급', 
-            'ad_grade': 'AD등급', 
-            'industry': '산업군명'
-        }, inplace=True)
+        display_df.rename(columns={'symbol': '종목', 'price': '가격', 'adv_50': '50일 평균 거래대금', 'rs_score': 'RS점수', 'industry_rs_score': '산업군RS점수', 'smr_grade': 'SMR등급', 'ad_grade': 'AD등급', 'industry': '산업군명'}, inplace=True)
 
     if is_mobile:
         st.subheader(f"Leaders List ({len(display_df)})")
@@ -272,8 +244,7 @@ if not df.empty:
                 is_fav = ticker in fav_list
                 if st.button("★ 관심해제" if is_fav else "☆ 관심저장", use_container_width=True):
                     success = toggle_favorite_gsheet(ticker)
-                    if success: # 성공했을 때만 화면을 새로고침함
-                        st.rerun()
+                    if success: st.rerun()
             
             is_ann_raw, bs_ann_raw, is_qtr_raw, info = get_fin_data(ticker)
             t_chart, t_check, t_fin, t_biz = st.tabs(["📊 차트", "🛡️ 체크리스트", "🧾 재무제표", "🏢 기업 개요"])
@@ -294,7 +265,6 @@ if not df.empty:
                 rs_hist_df = get_rs_history(ticker)
                 if not rs_hist_df.empty and len(rs_hist_df) > 1:
                     rs_hist_df['date'] = pd.to_datetime(rs_hist_df['date'])
-                    
                     if 'industry_rs_score' in rs_hist_df.columns:
                         rs_hist_df['industry_rs_score'] = rs_hist_df['industry_rs_score'].replace(0, pd.NA)
                         melted_df = rs_hist_df.melt('date', value_vars=['rs_score', 'industry_rs_score'], var_name='Type', value_name='Score')
@@ -310,7 +280,6 @@ if not df.empty:
                         rs_chart = alt.Chart(rs_hist_df).mark_line(color="#64ffda", strokeWidth=2).encode(
                             x=alt.X('date:T', title='날짜'), y=alt.Y('rs_score:Q', title='RS 점수', scale=alt.Scale(domain=[1, 100]))
                         ).properties(height=240)
-                        
                     st.altair_chart(rs_chart, use_container_width=True)
 
             with t_check:
@@ -400,18 +369,7 @@ if not df.empty:
                 else:
                     st.info("해당 기업의 분기 상세 재무제표가 공시되지 않았거나, 제공되지 않습니다.")
 
-            @st.cache_data(ttl=86400)
-def translate_text(text):
-    if not text:
-        return ""
-    try:
-        if len(text) > 4000:
-            text = text[:4000]
-        return GoogleTranslator(source='en', target='ko').translate(text)
-    except Exception as e:
-        return None
-
-with t_biz:
+            with t_biz:
                 desc_en = info.get("description", "")
                 if desc_en:
                     st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
