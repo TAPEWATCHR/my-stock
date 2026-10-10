@@ -400,18 +400,32 @@ if not df.empty:
                 else:
                     st.info("해당 기업의 분기 상세 재무제표가 공시되지 않았거나, 제공되지 않습니다.")
 
-            with t_biz:
-                desc_en = info.get("description", "")
-                if desc_en:
-                    st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
-                    try:
-                        with st.spinner("AI가 회사 개요를 번역 중입니다..."):
-                            desc_ko = GoogleTranslator(source='en', target='ko').translate(desc_en)
-                        st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
-                    except:
-                        st.error("번역 서버에 일시적으로 연결할 수 없습니다.")
-                else:
-                    st.info("해당 기업의 개요 정보가 제공되지 않습니다.")
+            @st.cache_data(ttl=86400) # 번역 결과가 매번 바뀌지 않으므로 캐싱하여 서버 부담 줄이기
+def translate_text(text):
+    if not text:
+        return ""
+    try:
+        # 너무 긴 텍스트는 번역 오류를 유발할 수 있으므로 일정 길이로 자르기 (안전장치)
+        if len(text) > 4000:
+            text = text[:4000]
+        return GoogleTranslator(source='en', target='ko').translate(text)
+    except Exception as e:
+        return None
+
+with t_biz:
+    desc_en = info.get("description", "")
+    if desc_en:
+        st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
+        
+        with st.spinner("AI가 회사 개요를 번역 중입니다..."):
+            desc_ko = translate_text(desc_en)
+            
+        if desc_ko:
+            st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ 번역 서버에 일시적인 부하가 생겨 한글 번역을 불러오지 못했습니다. 잠시 후 영문 원문을 참고해 주세요.")
+    else:
+        st.info("해당 기업의 개요 정보가 제공되지 않습니다.")
                     
         else: st.info("👈 왼쪽 리스트에서 종목을 선택해 주세요.")
 else:
