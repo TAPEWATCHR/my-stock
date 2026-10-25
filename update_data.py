@@ -98,7 +98,7 @@ def update_database():
     all_results = []
     snapshot_rows = []
     
-    print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 추세 및 AD 수급 분석 시작...")
+    print(f"🚀 1단계: 전체 {len(tickers)}개 종목 가격 추세 및 한국형 고도화 AD 수급 분석 시작...")
     
     chunk_size = 100
     for i in range(0, len(tickers), chunk_size):
@@ -111,7 +111,7 @@ def update_database():
         for ticker in chunk:
             try:
                 hist = price_data.copy() if len(chunk) == 1 else price_data[ticker].copy() if ticker in price_data.columns.levels[0] else pd.DataFrame()
-                hist = hist.dropna(subset=['Close', 'Volume'])
+                hist = hist.dropna(subset=['Close', 'High', 'Low', 'Volume'])
                 
                 # 최소 65거래일(1개 분기) 이상 상장된 기업만 취급
                 if len(hist) < 65: continue
@@ -135,11 +135,26 @@ def update_database():
                 
                 rs_raw = (0.4 * ret_3m) + (0.2 * ret_6m) + (0.2 * ret_9m) + (0.2 * ret_12m)
 
-                # [AD 로직] 지난 13주(65일) 거래량 가중 주가 모멘텀 누적 (Money Flow)
-                p_65 = p.tail(65)
-                v_65 = v.tail(65)
-                pct_change_65 = p_65.pct_change().fillna(0)
-                ad_raw = (pct_change_65 * v_65).sum() / v_65.sum() if v_65.sum() > 0 else 0
+                # 💡 [한국형 고도화 AD 수급 분석 적용] 65거래일(약 3개월) + CLV(종가 위치 가중치) 적용
+                lookback_days = 65
+                df_ad = hist.tail(lookback_days).copy()
+                
+                if len(df_ad) >= lookback_days:
+                    high_low_range = df_ad["High"] - df_ad["Low"]
+                    high_low_range = high_low_range.replace(0, 1e-5)
+                    
+                    # CLV (Close Location Value): 당일 고가/저가 범위 내에서 종가가 끝난 위치 (-1 ~ 1)
+                    df_ad["CLV"] = ((df_ad["Close"] - df_ad["Low"]) - (df_ad["High"] - df_ad["Close"])) / high_low_range
+                    
+                    # 자금 흐름 볼륨 = CLV * 당일 거래량
+                    df_ad["MoneyFlowVolume"] = df_ad["CLV"] * df_ad["Volume"]
+                    
+                    sum_money_flow = df_ad["MoneyFlowVolume"].sum()
+                    total_vol = df_ad["Volume"].sum()
+                    
+                    ad_raw = sum_money_flow / (total_vol + 1e-5)
+                else:
+                    ad_raw = 0.0
 
                 industry = base_df.loc[base_df['symbol'] == ticker, 'industry'].values[0]
 
@@ -155,6 +170,8 @@ def update_database():
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
     df['ad_raw'] = df['ad_raw'].fillna(0)
+    
+    # 5단계 백분위(상위 20% 단위)로 A, B, C, D, E 등급 산출
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
     print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 4대 요소 정밀 수집 진행 중...")
@@ -212,7 +229,7 @@ def update_database():
             
             # API 한도 방어 (분당 300회 제한)
             time.sleep(0.4) 
-            if idx % 100 == 0 and idx > 0: print(f"   ... {idx}개 재무 데이터 완료")
+            if idx % 100 == 0 and idx > 0: print(f"    ... {idx}개 재무 데이터 완료")
             
     # 누락된 데이터 0 처리
     for col in ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']:
