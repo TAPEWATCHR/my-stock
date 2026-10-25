@@ -6,11 +6,12 @@ import requests
 import streamlit.components.v1 as components
 import os
 import altair as alt
-from deep_translator import GoogleTranslator
+import deepl
 from streamlit_gsheets import GSheetsConnection
 
-# 환경 변수에서 FMP API 키 로드
+# 환경 변수에서 API 키 로드
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
+DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "").strip()
 
 def init_db():
     conn = sqlite3.connect('ibd_system.db')
@@ -85,15 +86,19 @@ def get_fin_data(ticker):
         return is_ann, bs_ann, is_qtr, info
     except: return [], [], [], {}
 
-# 💡 [추가] 번역 서버 부하 방지 및 캐싱 적용 함수 (파일 최상단에 배치)
+# 💡 DeepL API 번역 함수 (캐싱 적용으로 글자수 낭비 방지 및 안정성 확보)
 @st.cache_data(ttl=86400)
 def translate_text(text):
     if not text:
         return ""
+    if not DEEPL_API_KEY:
+        return None
     try:
+        translator = deepl.Translator(DEEPL_API_KEY)
         if len(text) > 4000:
             text = text[:4000]
-        return GoogleTranslator(source='en', target='ko').translate(text)
+        result = translator.translate_text(text, target_lang="KO")
+        return result.text
     except Exception as e:
         return None
 
@@ -374,13 +379,16 @@ if not df.empty:
                 if desc_en:
                     st.markdown(f'<div class="overview-panel" style="margin-bottom: 20px;"><strong>[영문 원문]</strong><br><br>{desc_en}</div>', unsafe_allow_html=True)
                     
-                    with st.spinner("AI가 회사 개요를 번역 중입니다..."):
-                        desc_ko = translate_text(desc_en)
-                        
-                    if desc_ko:
-                        st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
+                    if DEEPL_API_KEY:
+                        with st.spinner("DeepL AI가 회사 개요를 번역 중입니다..."):
+                            desc_ko = translate_text(desc_en)
+                            
+                        if desc_ko:
+                            st.markdown(f'<div class="overview-panel"><strong>[🇰🇷 DeepL 한글 번역]</strong><br><br>{desc_ko}</div>', unsafe_allow_html=True)
+                        else:
+                            st.warning("⚠️ 번역 중 오류가 발생했습니다. 영문 원문을 참고해 주세요.")
                     else:
-                        st.warning("⚠️ 번역 서버에 일시적인 부하가 생겨 한글 번역을 불러오지 못했습니다. 잠시 후 영문 원문을 참고해 주세요.")
+                        st.info("💡 DeepL API 키가 설정되지 않아 영문 원문만 제공됩니다. (Streamlit Secrets에 DEEPL_API_KEY를 설정해주세요)")
                 else:
                     st.info("해당 기업의 개요 정보가 제공되지 않습니다.")
                     
