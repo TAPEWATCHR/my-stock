@@ -2,7 +2,7 @@ streamlit
 pandas
 yfinance>=0.2.37
 altair
-deep-translator
+deepl
 requests
 lxml
 numpy
