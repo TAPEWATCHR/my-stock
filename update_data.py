@@ -49,7 +49,57 @@ def init_db():
     else:
         conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
         
+    # 👉 시장 지수 매집/분산 데이터 저장 테이블
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_index_daily (
+            Date TEXT PRIMARY KEY,
+            Close REAL,
+            Volume REAL,
+            PrevClose REAL,
+            PrevVolume REAL,
+            PctChange REAL,
+            IsAccumulation INTEGER,
+            IsDistribution INTEGER
+        )
+    """)
     conn.close()
+
+def calculate_market_distribution_days():
+    """📈 [미국 시장 수급 분석] 나스닥 종합 지수('^IXIC') 매집일/분산일 계산 후 DB 저장"""
+    print(" 🚀 [0/4] 미국 대표 시장 지수(나스닥 '^IXIC') 매집일/분산일 수급 분석 중...")
+    try:
+        # 미국 대표 지수 (나스닥 '^IXIC' 또는 S&P500 '^GSPC') 데이터 수집
+        idx_df = yf.download('^IXIC', period="1y", interval="1d", progress=False)
+        if idx_df.empty:
+            print(" ⚠️ 시장 지수 데이터를 불러오지 못했습니다.")
+            return
+            
+        # yfinance MultiIndex 정리
+        if isinstance(idx_df.columns, pd.MultiIndex):
+            idx_df.columns = idx_df.columns.get_level_values(0)
+            
+        idx_df = idx_df.reset_index()
+        idx_df = idx_df.dropna(subset=['Close', 'Volume'])
+        
+        idx_df['PrevClose'] = idx_df['Close'].shift(1)
+        idx_df['PrevVolume'] = idx_df['Volume'].shift(1)
+        idx_df['PctChange'] = idx_df['Close'].pct_change() * 100
+        
+        # 1. 매집일 조건: 지수 상승(> 0) AND 거래량 증가
+        idx_df['IsAccumulation'] = ((idx_df['Close'] > idx_df['PrevClose']) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
+        
+        # 2. 분산일 조건: 지수 하락률 0.2% 이상 AND 거래량 증가
+        idx_df['IsDistribution'] = ((idx_df['PctChange'] <= -0.2) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
+        
+        idx_df['Date'] = idx_df['Date'].dt.strftime('%Y-%m-%d')
+        save_cols = ['Date', 'Close', 'Volume', 'PrevClose', 'PrevVolume', 'PctChange', 'IsAccumulation', 'IsDistribution']
+        
+        conn = sqlite3.connect('ibd_system.db')
+        idx_df[save_cols].to_sql('market_index_daily', conn, if_exists='replace', index=False)
+        conn.close()
+        print("    ✅ 미국 시장 지수 매집일/분산일 DB 저장 완료")
+    except Exception as e:
+        print(f" ⚠️ 시장 수급 분석 중 오류 발생: {e}")
 
 def get_pure_exchange_stocks():
     try:
@@ -80,6 +130,8 @@ def get_pure_exchange_stocks():
 
 def update_database():
     init_db()
+    calculate_market_distribution_days()  # 💡 시장 수급 데이터 연산 실행
+    
     base_df = get_pure_exchange_stocks()
     if base_df.empty: return
 
@@ -135,7 +187,7 @@ def update_database():
                 
                 rs_raw = (0.4 * ret_3m) + (0.2 * ret_6m) + (0.2 * ret_9m) + (0.2 * ret_12m)
 
-                # 💡 [한국형 고도화 AD 수급 분석 적용] 65거래일(약 3개월) + CLV(종가 위치 가중치) 적용
+                # 💡 [고도화 AD 수급 분석 적용] 65거래일(약 3개월) + CLV(종가 위치 가중치) 적용
                 lookback_days = 65
                 df_ad = hist.tail(lookback_days).copy()
                 
@@ -261,7 +313,7 @@ def update_database():
         snapshot_df.to_sql('security_snapshot', conn, if_exists='replace', index=False)
     
     conn.close()
-    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 주식 저장 완료.")
+    print(f"✅ 업데이트 완료! 총 {len(final_df)}개 미국 주식 저장 완료.")
 
 if __name__ == "__main__":
     update_database()
