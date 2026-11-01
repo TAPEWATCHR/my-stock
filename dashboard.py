@@ -9,7 +9,6 @@ import altair as alt
 import deepl
 from streamlit_gsheets import GSheetsConnection
 
-# 환경 변수에서 API 키 로드
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "").strip()
 
@@ -35,7 +34,7 @@ def get_rs_history(ticker):
     conn.close()
     return hist
 
-# --- 📈 미국 시장 지수 수급 데이터 로드 함수 추가 ---
+# --- 📈 듀얼 시장 지수(나스닥 & S&P500) 수급 데이터 로드 함수 ---
 def get_market_distribution_data():
     if not os.path.exists('ibd_system.db'): return pd.DataFrame()
     conn = sqlite3.connect('ibd_system.db')
@@ -100,7 +99,6 @@ def get_fin_data(ticker):
         return is_ann, bs_ann, is_qtr, info
     except: return [], [], [], {}
 
-# 💡 DeepL API 번역 함수 (캐싱 적용으로 글자수 낭비 방지 및 안정성 확보)
 @st.cache_data(ttl=86400)
 def translate_text(text):
     if not text:
@@ -178,31 +176,47 @@ if not df.empty:
         is_mobile = st.toggle("📱 모바일 화면 최적화", value=False)
         st.divider()
 
-        # --- 📊 [사이드바] 미국 시장 수급 상태판 추가 ---
-        st.header("📊 시장 수급 상태 (오닐 IBD)")
+        # --- 📊 [사이드바] 나스닥 & S&P 500 듀얼 시장 수급 상태판 ---
+        st.header("📊 미국 시장 수급 상태 (오닐 IBD)")
         df_market = get_market_distribution_data()
+        
         if not df_market.empty:
-            recent_25 = df_market.tail(25)
-            total_dist_days = int(recent_25['IsDistribution'].sum())
-            total_acc_days = int(recent_25['IsAccumulation'].sum())
+            df_nasdaq = df_market[df_market['index_code'] == 'NASDAQ'].tail(25)
+            df_sp500 = df_market[df_market['index_code'] == 'SP500'].tail(25)
             
-            if total_dist_days >= 5:
+            nasdaq_d = int(df_nasdaq['IsDistribution'].sum()) if not df_nasdaq.empty else 0
+            nasdaq_a = int(df_nasdaq['IsAccumulation'].sum()) if not df_nasdaq.empty else 0
+            sp500_d = int(df_sp500['IsDistribution'].sum()) if not df_sp500.empty else 0
+            sp500_a = int(df_sp500['IsAccumulation'].sum()) if not df_sp500.empty else 0
+            
+            # 두 지수 중 더 높은 분산일 수 기준으로 종합 위험도 판단
+            max_d_days = max(nasdaq_d, sp500_d)
+            if max_d_days >= 5:
                 risk_text = "🚨 위험 (고점경계 / 현금확대)"
                 risk_color = "red"
-            elif total_dist_days >= 3:
+            elif max_d_days >= 3:
                 risk_text = "⚠️ 경계 (매수신중 / 보유점검)"
                 risk_color = "orange"
             else:
                 risk_text = "✅ 정상 (상승추세 유지)"
                 risk_color = "green"
                 
-            st.markdown(f"**미국 시장 상태:** :{risk_color}[{risk_text}]")
-            st.metric("최근 25거래일 분산일(D-Day)", f"{total_dist_days}회", help="4~5회 이상 누적 시 현금 비중 확대 고려")
-            st.metric("최근 25거래일 매집일(A-Day)", f"{total_acc_days}회")
+            st.markdown(f"**종합 시장 상태:** :{risk_color}[{risk_text}]")
+            
+            # 지수별 수급 비교표 표시
+            c_idx1, c_idx2 = st.columns(2)
+            with c_idx1:
+                st.caption("🔹 나스닥 (IXIC)")
+                st.metric("분산일(D)", f"{nasdaq_d}회")
+                st.metric("매집일(A)", f"{nasdaq_a}회")
+            with c_idx2:
+                st.caption("🔸 S&P 500 (GSPC)")
+                st.metric("분산일(D)", f"{sp500_d}회")
+                st.metric("매집일(A)", f"{sp500_a}회")
         else:
             st.warning("시장 수급 데이터가 없습니다. `update_data.py`를 실행해주세요.")
         st.divider()
-        # ----------------------------------------------
+        # --------------------------------------------------------
 
         st.header("필터")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
