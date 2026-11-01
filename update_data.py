@@ -21,7 +21,7 @@ def init_db():
     conn = sqlite3.connect('ibd_system.db')
     cursor = conn.cursor()
     
-    # SMR 캐시 테이블의 스키마 변경 (오리지널 4대 요소 적용을 위한 마이그레이션)
+    # SMR 캐시 테이블 스키마 변경 마이그레이션
     cursor.execute("PRAGMA table_info(smr_cache)")
     columns = [info[1] for info in cursor.fetchall()]
     if 'sales_growth' not in columns and columns:
@@ -39,7 +39,7 @@ def init_db():
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS security_snapshot (date TEXT, symbol TEXT, company_name TEXT, industry TEXT, price REAL, volume REAL, adv_50 REAL, ad_grade TEXT, smr_grade TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
     
-    # 👉 rs_history 테이블 마이그레이션 및 생성 (산업군 RS 추가)
+    # rs_history 테이블 마이그레이션 및 생성
     cursor.execute("PRAGMA table_info(rs_history)")
     columns_rs = [info[1] for info in cursor.fetchall()]
     if columns_rs:
@@ -49,57 +49,72 @@ def init_db():
     else:
         conn.execute("CREATE TABLE IF NOT EXISTS rs_history (symbol TEXT, date TEXT, rs_score INTEGER, industry_rs_score INTEGER)")
         
-    # 👉 시장 지수 매집/분산 데이터 저장 테이블
+    # 👉 듀얼 시장 지수(나스닥/S&P500) 매집/분산 데이터 저장 테이블
     conn.execute("""
         CREATE TABLE IF NOT EXISTS market_index_daily (
-            Date TEXT PRIMARY KEY,
+            index_code TEXT,
+            Date TEXT,
             Close REAL,
             Volume REAL,
             PrevClose REAL,
             PrevVolume REAL,
             PctChange REAL,
             IsAccumulation INTEGER,
-            IsDistribution INTEGER
+            IsDistribution INTEGER,
+            PRIMARY KEY (index_code, Date)
         )
     """)
     conn.close()
 
 def calculate_market_distribution_days():
-    """📈 [미국 시장 수급 분석] 나스닥 종합 지수('^IXIC') 매집일/분산일 계산 후 DB 저장"""
-    print(" 🚀 [0/4] 미국 대표 시장 지수(나스닥 '^IXIC') 매집일/분산일 수급 분석 중...")
-    try:
-        # 미국 대표 지수 (나스닥 '^IXIC' 또는 S&P500 '^GSPC') 데이터 수집
-        idx_df = yf.download('^IXIC', period="1y", interval="1d", progress=False)
-        if idx_df.empty:
-            print(" ⚠️ 시장 지수 데이터를 불러오지 못했습니다.")
-            return
+    """📈 [미국 듀얼 시장 지수 분석] 나스닥('^IXIC') 및 S&P 500('^GSPC') 매집일/분산일 동시에 계산 후 DB 저장"""
+    print(" 🚀 [0/4] 미국 듀얼 대표 지수(나스닥 '^IXIC' & S&P 500 '^GSPC') 매집일/분산일 분석 중...")
+    
+    target_indices = {
+        'NASDAQ': '^IXIC',
+        'SP500': '^GSPC'
+    }
+    
+    combined_dfs = []
+    
+    for idx_name, ticker in target_indices.items():
+        try:
+            idx_df = yf.download(ticker, period="1y", interval="1d", progress=False)
+            if idx_df.empty:
+                print(f" ⚠️ {idx_name}({ticker}) 지수 데이터를 불러오지 못했습니다.")
+                continue
+                
+            if isinstance(idx_df.columns, pd.MultiIndex):
+                idx_df.columns = idx_df.columns.get_level_values(0)
+                
+            idx_df = idx_df.reset_index()
+            idx_df = idx_df.dropna(subset=['Close', 'Volume'])
             
-        # yfinance MultiIndex 정리
-        if isinstance(idx_df.columns, pd.MultiIndex):
-            idx_df.columns = idx_df.columns.get_level_values(0)
+            idx_df['PrevClose'] = idx_df['Close'].shift(1)
+            idx_df['PrevVolume'] = idx_df['Volume'].shift(1)
+            idx_df['PctChange'] = idx_df['Close'].pct_change() * 100
             
-        idx_df = idx_df.reset_index()
-        idx_df = idx_df.dropna(subset=['Close', 'Volume'])
-        
-        idx_df['PrevClose'] = idx_df['Close'].shift(1)
-        idx_df['PrevVolume'] = idx_df['Volume'].shift(1)
-        idx_df['PctChange'] = idx_df['Close'].pct_change() * 100
-        
-        # 1. 매집일 조건: 지수 상승(> 0) AND 거래량 증가
-        idx_df['IsAccumulation'] = ((idx_df['Close'] > idx_df['PrevClose']) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
-        
-        # 2. 분산일 조건: 지수 하락률 0.2% 이상 AND 거래량 증가
-        idx_df['IsDistribution'] = ((idx_df['PctChange'] <= -0.2) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
-        
-        idx_df['Date'] = idx_df['Date'].dt.strftime('%Y-%m-%d')
-        save_cols = ['Date', 'Close', 'Volume', 'PrevClose', 'PrevVolume', 'PctChange', 'IsAccumulation', 'IsDistribution']
-        
+            # 1. 매집일: 지수 상승 AND 거래량 증가
+            idx_df['IsAccumulation'] = ((idx_df['Close'] > idx_df['PrevClose']) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
+            
+            # 2. 분산일: 지수 하락률 0.2% 이상 AND 거래량 증가
+            idx_df['IsDistribution'] = ((idx_df['PctChange'] <= -0.2) & (idx_df['Volume'] > idx_df['PrevVolume'])).astype(int)
+            
+            idx_df['index_code'] = idx_name
+            idx_df['Date'] = idx_df['Date'].dt.strftime('%Y-%m-%d')
+            
+            save_cols = ['index_code', 'Date', 'Close', 'Volume', 'PrevClose', 'PrevVolume', 'PctChange', 'IsAccumulation', 'IsDistribution']
+            combined_dfs.append(idx_df[save_cols])
+            
+        except Exception as e:
+            print(f" ⚠️ {idx_name} 수급 분석 중 오류 발생: {e}")
+            
+    if combined_dfs:
+        final_idx_df = pd.concat(combined_dfs, ignore_index=True)
         conn = sqlite3.connect('ibd_system.db')
-        idx_df[save_cols].to_sql('market_index_daily', conn, if_exists='replace', index=False)
+        final_idx_df.to_sql('market_index_daily', conn, if_exists='replace', index=False)
         conn.close()
-        print("    ✅ 미국 시장 지수 매집일/분산일 DB 저장 완료")
-    except Exception as e:
-        print(f" ⚠️ 시장 수급 분석 중 오류 발생: {e}")
+        print("    ✅ 미국 나스닥 및 S&P 500 시장 지수 매집일/분산일 DB 저장 완료")
 
 def get_pure_exchange_stocks():
     try:
@@ -130,7 +145,7 @@ def get_pure_exchange_stocks():
 
 def update_database():
     init_db()
-    calculate_market_distribution_days()  # 💡 시장 수급 데이터 연산 실행
+    calculate_market_distribution_days()  # 💡 듀얼 시장 지수 연산 실행
     
     base_df = get_pure_exchange_stocks()
     if base_df.empty: return
@@ -165,7 +180,6 @@ def update_database():
                 hist = price_data.copy() if len(chunk) == 1 else price_data[ticker].copy() if ticker in price_data.columns.levels[0] else pd.DataFrame()
                 hist = hist.dropna(subset=['Close', 'High', 'Low', 'Volume'])
                 
-                # 최소 65거래일(1개 분기) 이상 상장된 기업만 취급
                 if len(hist) < 65: continue
 
                 p = hist['Close']
@@ -174,7 +188,7 @@ def update_database():
                 c_0 = float(p.iloc[-1])
                 adv_50 = float((v.tail(50).mean() * c_0))
                 
-                # [RS 로직] 12개월(252일) 가중 평균 수익률 (40% / 20% / 20% / 20%)
+                # [RS 로직] 12개월(252일) 가중 평균 수익률
                 c_63 = float(p.iloc[-63]) if len(p) >= 63 else c_0
                 c_126 = float(p.iloc[-126]) if len(p) >= 126 else c_63
                 c_189 = float(p.iloc[-189]) if len(p) >= 189 else c_126
@@ -187,7 +201,7 @@ def update_database():
                 
                 rs_raw = (0.4 * ret_3m) + (0.2 * ret_6m) + (0.2 * ret_9m) + (0.2 * ret_12m)
 
-                # 💡 [고도화 AD 수급 분석 적용] 65거래일(약 3개월) + CLV(종가 위치 가중치) 적용
+                # 💡 AD 수급 분석 적용 (65거래일 + CLV 가중치)
                 lookback_days = 65
                 df_ad = hist.tail(lookback_days).copy()
                 
@@ -195,10 +209,7 @@ def update_database():
                     high_low_range = df_ad["High"] - df_ad["Low"]
                     high_low_range = high_low_range.replace(0, 1e-5)
                     
-                    # CLV (Close Location Value): 당일 고가/저가 범위 내에서 종가가 끝난 위치 (-1 ~ 1)
                     df_ad["CLV"] = ((df_ad["Close"] - df_ad["Low"]) - (df_ad["High"] - df_ad["Close"])) / high_low_range
-                    
-                    # 자금 흐름 볼륨 = CLV * 당일 거래량
                     df_ad["MoneyFlowVolume"] = df_ad["CLV"] * df_ad["Volume"]
                     
                     sum_money_flow = df_ad["MoneyFlowVolume"].sum()
@@ -222,8 +233,6 @@ def update_database():
     df = pd.DataFrame(all_results)
     df['rs_score'] = (df['rs_raw'].rank(pct=True) * 99).astype(int)
     df['ad_raw'] = df['ad_raw'].fillna(0)
-    
-    # 5단계 백분위(상위 20% 단위)로 A, B, C, D, E 등급 산출
     df['ad_grade'] = pd.qcut(df['ad_raw'].rank(method='first'), 5, labels=['E', 'D', 'C', 'B', 'A']).astype(str)
 
     print("🚀 2단계: FMP 유료 API 기반 SMR(재무) 4대 요소 정밀 수집 진행 중...")
@@ -239,7 +248,6 @@ def update_database():
         print(f" > {len(needs_smr_update)}개 종목 재무 데이터 갱신 중 (IS 및 BS 동시 호출)...")
         for idx, ticker in enumerate(needs_smr_update):
             try:
-                # 손익계산서(최대 5분기: YoY 계산용)와 대차대조표(자본 확인용) 호출
                 url_is = f"https://financialmodelingprep.com/stable/income-statement?symbol={ticker}&period=quarter&limit=5&apikey={FMP_API_KEY}"
                 url_bs = f"https://financialmodelingprep.com/stable/balance-sheet-statement?symbol={ticker}&period=quarter&limit=1&apikey={FMP_API_KEY}"
                 
@@ -251,20 +259,16 @@ def update_database():
                     bf = res_bs.json()
                     
                     if len(qf) >= 1 and len(bf) >= 1:
-                        # 1. 매출 성장률
                         rev_0 = qf[0].get('revenue') or 0
                         rev_4 = qf[4].get('revenue') or 0 if len(qf) == 5 else (qf[-1].get('revenue') or 0)
                         sales_growth = (rev_0 - rev_4) / abs(rev_4) if rev_4 != 0 else 0
                         
-                        # 2. 세전 이익률
                         inc_tax = qf[0].get('incomeBeforeTax') or 0
                         pre_tax_margin = inc_tax / rev_0 if rev_0 != 0 else 0
                         
-                        # 3. 세후 이익률
                         net_inc = qf[0].get('netIncome') or 0
                         after_tax_margin = net_inc / rev_0 if rev_0 != 0 else 0
                         
-                        # 4. ROE
                         ttm_net = sum([(item.get('netIncome') or 0) for item in qf[:4]])
                         equity = bf[0].get('totalStockholdersEquity') or 0
                         roe = ttm_net / equity if equity != 0 else 0
@@ -279,15 +283,12 @@ def update_database():
                         df.loc[df['symbol'] == ticker, ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']] = [sales_growth, pre_tax_margin, after_tax_margin, roe]
             except: pass
             
-            # API 한도 방어 (분당 300회 제한)
             time.sleep(0.4) 
             if idx % 100 == 0 and idx > 0: print(f"    ... {idx}개 재무 데이터 완료")
             
-    # 누락된 데이터 0 처리
     for col in ['sales_growth', 'pre_tax_margin', 'after_tax_margin', 'roe']:
         df[col] = df[col].fillna(0)
     
-    # [SMR 로직] 4가지 요소별 백분위 랭킹 산출 후 합산하여 최종 SMR 등급 부여
     df['rank_sg'] = df['sales_growth'].rank(pct=True)
     df['rank_ptm'] = df['pre_tax_margin'].rank(pct=True)
     df['rank_atm'] = df['after_tax_margin'].rank(pct=True)
@@ -303,7 +304,6 @@ def update_database():
     save_cols = ['symbol', 'price', 'rs_score', 'smr_grade', 'ad_grade', 'industry_rs_score', 'industry', 'adv_50']
     final_df[save_cols].to_sql('repo_results', conn, if_exists='replace', index=False)
 
-    # 👉 rs_history 테이블에 개별 RS와 함께 industry_rs_score 저장
     rs_history_df = final_df[['symbol', 'rs_score', 'industry_rs_score']].copy()
     rs_history_df['date'] = datetime.now().strftime('%Y-%m-%d')
     rs_history_df[['symbol', 'date', 'rs_score', 'industry_rs_score']].to_sql('rs_history', conn, if_exists='append', index=False)
