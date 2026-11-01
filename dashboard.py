@@ -35,6 +35,20 @@ def get_rs_history(ticker):
     conn.close()
     return hist
 
+# --- 📈 미국 시장 지수 수급 데이터 로드 함수 추가 ---
+def get_market_distribution_data():
+    if not os.path.exists('ibd_system.db'): return pd.DataFrame()
+    conn = sqlite3.connect('ibd_system.db')
+    try:
+        df_market = pd.read_sql("SELECT * FROM market_index_daily", conn)
+    except:
+        df_market = pd.DataFrame()
+    conn.close()
+    if not df_market.empty and 'Date' in df_market.columns:
+        df_market['Date'] = pd.to_datetime(df_market['Date'])
+        df_market = df_market.sort_values('Date').reset_index(drop=True)
+    return df_market
+
 def get_gsheet_conn():
     return st.connection("gsheets", type=GSheetsConnection)
 
@@ -163,6 +177,32 @@ if not df.empty:
     with st.sidebar:
         is_mobile = st.toggle("📱 모바일 화면 최적화", value=False)
         st.divider()
+
+        # --- 📊 [사이드바] 미국 시장 수급 상태판 추가 ---
+        st.header("📊 시장 수급 상태 (오닐 IBD)")
+        df_market = get_market_distribution_data()
+        if not df_market.empty:
+            recent_25 = df_market.tail(25)
+            total_dist_days = int(recent_25['IsDistribution'].sum())
+            total_acc_days = int(recent_25['IsAccumulation'].sum())
+            
+            if total_dist_days >= 5:
+                risk_text = "🚨 위험 (고점경계 / 현금확대)"
+                risk_color = "red"
+            elif total_dist_days >= 3:
+                risk_text = "⚠️ 경계 (매수신중 / 보유점검)"
+                risk_color = "orange"
+            else:
+                risk_text = "✅ 정상 (상승추세 유지)"
+                risk_color = "green"
+                
+            st.markdown(f"**미국 시장 상태:** :{risk_color}[{risk_text}]")
+            st.metric("최근 25거래일 분산일(D-Day)", f"{total_dist_days}회", help="4~5회 이상 누적 시 현금 비중 확대 고려")
+            st.metric("최근 25거래일 매집일(A-Day)", f"{total_acc_days}회")
+        else:
+            st.warning("시장 수급 데이터가 없습니다. `update_data.py`를 실행해주세요.")
+        st.divider()
+        # ----------------------------------------------
 
         st.header("필터")
         min_p = st.number_input("최소 주가 ($)", value=10.0)
